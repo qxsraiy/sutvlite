@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
@@ -16,14 +16,14 @@
         android:name=".LiteApp"
         android:icon="@mipmap/ic_launcher"
         android:banner="@drawable/tv_banner"
-        android:label="天光云影 Lite"
+        android:label="极简直播"
         android:usesCleartextTraffic="true"
         android:allowBackup="false">
 
         <activity
             android:name=".ui.LiveActivity"
             android:exported="true"
-            android:label="天光云影 Lite"
+            android:label="极简直播"
             android:launchMode="singleTask"
             android:theme="@android:style/Theme.NoTitleBar.Fullscreen"
             android:configChanges="orientation|screenSize|keyboardHidden"
