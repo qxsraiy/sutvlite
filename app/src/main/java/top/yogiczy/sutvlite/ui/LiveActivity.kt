@@ -51,6 +51,8 @@ class LiveActivity : Activity() {
     private val scope = CoroutineScope(Dispatchers.Main)
 
     private var categories: List<MiguCategory> = emptyList()
+    /** 未套用屏蔽的原始分组 (返回设置时重新过滤用) */
+    private var rawCategories: List<MiguCategory> = emptyList()
     private var currentGroupIdx = 0
     private var currentChannelList: List<MiguChannel> = emptyList()
     private var currentChannelIdx = 0
@@ -93,6 +95,12 @@ class LiveActivity : Activity() {
         buildUi()
         registerNetReceiver()
         loadAndPlay()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // 从设置返回: 立即套用分组/频道屏蔽, 不用重启
+        if (rawCategories.isNotEmpty()) applyBlockFilterNow()
     }
 
     override fun onStop() {
@@ -258,7 +266,9 @@ class LiveActivity : Activity() {
                 showLoading(if (attempt == 1) "加载频道…" else "加载频道…($attempt)")
                 categories = withContext(Dispatchers.IO) {
                     runCatching {
-                        Prefs.filter(MiguBackendManager.getInstance(this@LiveActivity).loadAllChannels())
+                        val all = MiguBackendManager.getInstance(this@LiveActivity).loadAllChannels()
+                        rawCategories = all
+                        Prefs.filter(all)
                     }.getOrElse { emptyList() }
                 }
                 if (categories.isNotEmpty()) break
@@ -398,6 +408,37 @@ class LiveActivity : Activity() {
         }
     }
 
+    /** 立即套用屏蔽: 若正在播的台被隐藏, 自动切到同组第一个可见台 */
+    private fun applyBlockFilterNow() {
+        val filtered = Prefs.filter(rawCategories)
+        if (filtered.isEmpty()) return // 全被隐藏时保持现状, 避免黑屏
+        if (filtered == categories) return // 没有变化
+
+        val curPid = currentChannelList.getOrNull(currentChannelIdx)?.pid
+        val oldGroupName = categories.getOrNull(currentGroupIdx)?.name
+
+        categories = filtered
+        val stillThere = filtered.indexOfFirst { cat -> cat.dataList.any { it.pid == curPid } }
+        if (curPid != null && stillThere >= 0) {
+            // 当前台还在: 只更新下标
+            currentGroupIdx = stillThere
+            currentChannelList = filtered[stillThere].dataList
+            currentChannelIdx = filtered[stillThere].dataList.indexOfFirst { it.pid == curPid }
+                .coerceAtLeast(0)
+        } else {
+            // 当前台被隐藏: 优先留在原分组, 否则第一组
+            val g = filtered.indexOfFirst { it.name == oldGroupName }.takeIf { it >= 0 } ?: 0
+            currentGroupIdx = g
+            currentChannelList = filtered[g].dataList
+            currentChannelIdx = 0
+            switchChannel()
+        }
+        // 面板开着就重建, 立刻反映
+        if (overlayVisible) {
+            overlayVisible = false
+            showPanel()
+        }
+    }
     // ==================== 选台面板 ====================
 
     private fun showPanel() {
