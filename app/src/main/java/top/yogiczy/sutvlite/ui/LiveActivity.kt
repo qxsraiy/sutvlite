@@ -48,7 +48,12 @@ class LiveActivity : Activity() {
     private val C_BLUE_DIM = 0xFF1B2C4A.toInt()
     private val C_WHITE = 0xFFFFFFFF.toInt()
 
-    private val scope = CoroutineScope(Dispatchers.Main)
+    /** 可统一取消的协程作用域: 页面销毁后所有挂起任务立即停止, 避免碰已销毁的 View */
+    private val scopeJob = kotlinx.coroutines.SupervisorJob()
+    private val scope = CoroutineScope(Dispatchers.Main + scopeJob)
+
+    /** 页面是否还活着 (协程/回调里改 UI 前必须判断) */
+    private fun alive(): Boolean = !isFinishing && !isDestroyed
 
     private var categories: List<MiguCategory> = emptyList()
     /** 未套用屏蔽的原始分组 (返回设置时重新过滤用) */
@@ -110,6 +115,8 @@ class LiveActivity : Activity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        // 先停协程, 再拆 View/播放器, 避免"视图已销毁仍被回调访问"
+        scopeJob.cancel()
         unregisterNetReceiver()
         autoSwitchJob?.cancel()
         dismissJob?.cancel()
@@ -306,7 +313,7 @@ class LiveActivity : Activity() {
 
         player?.onError = { msg ->
             runOnUiThread {
-                if (!playedFirstFrame) {
+                if (alive() && !playedFirstFrame) {
                     hideLoading()
                     showHint("播放失败: $msg")
                 }
@@ -315,7 +322,7 @@ class LiveActivity : Activity() {
         player?.onFirstFrame = {
             playedFirstFrame = true
             autoSwitchJob?.cancel()
-            runOnUiThread { hideLoading() }
+            runOnUiThread { if (alive()) hideLoading() }
         }
 
         autoSwitchJob?.cancel()
@@ -379,11 +386,13 @@ class LiveActivity : Activity() {
     // ==================== 提示 ====================
 
     private fun showLoading(text: String) {
+        if (!alive()) return
         loadingTv?.text = text
         loadingTv?.visibility = View.VISIBLE
     }
 
     private fun hideLoading() {
+        if (!alive()) return
         loadingTv?.visibility = View.GONE
     }
 
@@ -644,7 +653,16 @@ class LiveActivity : Activity() {
                 }
                 true
             }
-            KeyEvent.KEYCODE_BACK -> { finish(); true }
+            KeyEvent.KEYCODE_BACK -> {
+                // 作为默认桌面(HOME)时, BACK 直接 finish 会让系统立刻重启自己,
+                // 快速连按就会连环重建 -> 崩溃。这里改为忽略并给提示。
+                if (isDefaultHome()) {
+                    showHint("已设为桌面，返回键无需退出")
+                } else {
+                    finish()
+                }
+                true
+            }
             else -> super.onKeyDown(keyCode, event)
         }
     }
@@ -667,6 +685,21 @@ class LiveActivity : Activity() {
             return true
         }
         return super.onKeyUp(keyCode, event)
+    }
+
+    /** 当前是否为本机默认桌面 (HOME) */
+    private fun isDefaultHome(): Boolean = try {
+        val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+        val ri = packageManager.resolveActivity(intent, android.content.pm.PackageManager.MATCH_DEFAULT_ONLY)
+        ri?.activityInfo?.packageName == packageName
+    } catch (_: Throwable) {
+        false
+    }
+
+    /** HOME 被连按时的重复启动: 忽略, 不重建不重播 */
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        setIntent(intent)
     }
 
     // ==================== 网络 ====================
