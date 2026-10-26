@@ -376,6 +376,21 @@ class LegacyPlayerView @JvmOverloads constructor(
 
     fun getStateText(): String = diagTv.text?.toString() ?: ""
 
+    /** 硬重启: 停掉当前加载, 重新拉取同一地址 (用于"一直转圈"时兜底) */
+    fun restart() {
+        val url = currentUrl ?: return
+        try {
+            cancelWatchdog()
+            exoPlayer?.stop()
+            hasRenderedFirstFrame = false
+            useExo(url)
+            scheduleWatchdog()
+            android.util.Log.i(TAG, "硬重启: 重新拉流 ${url.take(60)}")
+        } catch (t: Throwable) {
+            android.util.Log.e(TAG, "硬重启失败: ${t.message}")
+        }
+    }
+
     /** 是否已渲染首帧 (智能换源判断用) */
     fun isRenderedFirstFrame(): Boolean = hasRenderedFirstFrame
 

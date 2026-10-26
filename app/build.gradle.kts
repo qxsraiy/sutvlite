@@ -12,8 +12,8 @@ android {
         applicationId = "top.yogiczy.sutvlite"
         minSdk = 19
         targetSdk = 19
-        versionCode = 4
-        versionName = "0.1.3"
+        versionCode = 5
+        versionName = "0.1.4"
         multiDexEnabled = true
     }
 

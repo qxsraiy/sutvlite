@@ -85,7 +85,11 @@ class LiveActivity : Activity() {
     private var useProxy = true
     private var playedFirstFrame = false
     private var autoSwitchJob: Job? = null
+    private var restartJob: Job? = null
+    /** 本次打开是否已做过一次硬重启 (避免死循环) */
+    private var hardRestartDone = false
     private var bannerHideJob: Job? = null
+    private var hintHideJob: Job? = null
     private var starting = false
 
     // 设置入口: 长按 OK / 5 次菜单
@@ -207,19 +211,19 @@ class LiveActivity : Activity() {
     /** 三段式选台面板: 分组 | 竖线 | 频道 */
     private fun buildPanel(root: FrameLayout) {
         val ov = FrameLayout(this).apply {
-            setBackgroundColor(0xB30B1220.toInt())
+            setBackgroundColor(0x66000000)
             visibility = View.GONE
         }
         overlay = ov
 
+        // 灰色半透明三栏面板 (靠左)
         val card = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = GradientDrawable().apply {
-                cornerRadius = dp(18).toFloat()
-                setColor(0xFF0E1A2E.toInt())
-                setStroke(dp(2), C_BLUE)
+                cornerRadius = dp(14).toFloat()
+                setColor(0xCC2A2A30.toInt())
             }
-            setPadding(dp(18), dp(14), dp(18), dp(14))
+            setPadding(dp(16), dp(14), dp(16), dp(14))
         }
 
         val body = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -232,7 +236,7 @@ class LiveActivity : Activity() {
         }
         body.addView(groupScroll, LinearLayout.LayoutParams(dp(180), dp(360)))
 
-        body.addView(View(this).apply { setBackgroundColor(0x662F7BFF) },
+        body.addView(View(this).apply { setBackgroundColor(0x55FFFFFF) },
             LinearLayout.LayoutParams(dp(2), dp(360)).apply { setMargins(dp(12), 0, dp(12), 0) })
 
         channelCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -245,7 +249,10 @@ class LiveActivity : Activity() {
 
         card.addView(body)
         ov.addView(card, FrameLayout.LayoutParams(
-            dp(760), FrameLayout.LayoutParams.WRAP_CONTENT).apply { gravity = Gravity.CENTER })
+            dp(700), FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+            gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            setMargins(dp(48), 0, 0, 0)
+        })
         root.addView(ov, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
     }
@@ -308,6 +315,7 @@ class LiveActivity : Activity() {
         val ch = currentChannelList.getOrNull(currentChannelIdx) ?: return
         SP.putString("last_pid", ch.pid)
         playedFirstFrame = false
+        hardRestartDone = false
         showLoading("连接中…")
         showBanner(ch.name)
 
@@ -322,9 +330,20 @@ class LiveActivity : Activity() {
         player?.onFirstFrame = {
             playedFirstFrame = true
             autoSwitchJob?.cancel()
+            restartJob?.cancel()
             runOnUiThread { if (alive()) hideLoading() }
         }
 
+        // 10 秒还没出画面 -> 硬重启一次 (停掉卡死的加载, 重新拉流)
+        restartJob?.cancel()
+        restartJob = scope.launch {
+            delay(10_000)
+            if (!playedFirstFrame && !hardRestartDone) {
+                hardRestartDone = true
+                showLoading("重新加载…")
+                player?.restart()
+            }
+        }
         autoSwitchJob?.cancel()
         if (useProxy) {
             player?.play("http://127.0.0.1:10481/migufb/${ch.pid}", isLive = true)
@@ -396,13 +415,15 @@ class LiveActivity : Activity() {
         loadingTv?.visibility = View.GONE
     }
 
+    /** 底部提示: 独立计时, 5 秒后必定隐藏 (不受换台横幅影响) */
     private fun showHint(text: String) {
+        if (!alive()) return
         hintTv?.text = text
         hintTv?.visibility = View.VISIBLE
-        bannerHideJob?.cancel()
-        bannerHideJob = scope.launch {
+        hintHideJob?.cancel()
+        hintHideJob = scope.launch {
             delay(5000)
-            hintTv?.visibility = View.GONE
+            if (alive()) hintTv?.visibility = View.GONE
         }
     }
 
@@ -521,17 +542,22 @@ class LiveActivity : Activity() {
             val selected = idx == panelGroupIdx
             val focused = tv.isFocused
             tv.background = GradientDrawable().apply {
-                cornerRadius = dp(9).toFloat()
+                cornerRadius = dp(7).toFloat()
                 setColor(
                     when {
-                        focused -> C_BLUE
-                        selected -> C_BLUE_DIM
+                        focused -> 0xFFFFFFFF.toInt()
+                        selected -> 0x33FFFFFF
                         else -> 0x00000000
                     }
                 )
-                if (focused) setStroke(dp(2), C_WHITE)
             }
-            tv.setTextColor(if (focused) C_WHITE else if (selected) C_BLUE_LIGHT else 0xFF8FA3C0.toInt())
+            tv.setTextColor(
+                when {
+                    focused -> 0xFF101010.toInt()
+                    selected -> 0xFFFFFFFF.toInt()
+                    else -> 0xFFB9BDC7.toInt()
+                }
+            )
             tv.setTypeface(null, if (selected) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL)
         }
     }
@@ -582,11 +608,12 @@ class LiveActivity : Activity() {
         channelRows.forEach { row ->
             val focused = row.isFocused
             row.background = GradientDrawable().apply {
-                cornerRadius = dp(9).toFloat()
-                setColor(if (focused) C_BLUE else 0x00000000)
-                if (focused) setStroke(dp(2), C_WHITE)
+                cornerRadius = dp(7).toFloat()
+                setColor(if (focused) 0xFFFFFFFF.toInt() else 0x00000000)
             }
-            (row.getChildAt(0) as? TextView)?.setTextColor(if (focused) C_WHITE else 0xFFE6ECF5.toInt())
+            (row.getChildAt(0) as? TextView)?.setTextColor(
+                if (focused) 0xFF101010.toInt() else 0xFFE6E8EE.toInt()
+            )
         }
     }
 
