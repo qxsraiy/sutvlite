@@ -1,0 +1,4 @@
+﻿-keepattributes Signature
+-keep class com.google.android.exoplayer2.** { *; }
+-dontwarn okhttp3.**
+-dontwarn com.koushikdutta.**
