@@ -39,7 +39,7 @@ import top.yogiczy.sutvlite.player.LegacyPlayerView
  *   设置入口: 长按 OK / 连续 5 次菜单键 / 手机长按屏幕
  * 换台只显示横幅 + 频道名
  */
-class LiveActivity : Activity() {
+open class LiveActivity : Activity() {
 
     // ---- 配色: 蓝色为主, 白色为辅 ----
     private val C_BG = 0xFF0B1220.toInt()
