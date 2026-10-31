@@ -179,7 +179,7 @@ open class LiveActivity : Activity() {
             visibility = View.GONE
         }
         bannerName = TextView(this).apply {
-            textSize = 30f
+            textSize = 38f
             setTextColor(C_WHITE)
             setTypeface(null, android.graphics.Typeface.BOLD)
         }
@@ -211,19 +211,20 @@ open class LiveActivity : Activity() {
     /** 三段式选台面板: 分组 | 竖线 | 频道 */
     private fun buildPanel(root: FrameLayout) {
         val ov = FrameLayout(this).apply {
-            setBackgroundColor(0x66000000)
+            // 面板本身已不透明, 遮罩用深色即可
+            setBackgroundColor(0x99000000.toInt())
             visibility = View.GONE
         }
         overlay = ov
 
-        // 灰色半透明三栏面板 (靠左)
+        // 不透明灰色三栏面板 (靠左, 高度占屏幕 92%)
         val card = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = GradientDrawable().apply {
-                cornerRadius = dp(14).toFloat()
-                setColor(0xCC2A2A30.toInt())
+                cornerRadius = dp(16).toFloat()
+                setColor(0xFF2A2A30.toInt())
             }
-            setPadding(dp(16), dp(14), dp(16), dp(14))
+            setPadding(dp(20), dp(16), dp(20), dp(16))
         }
 
         val body = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -234,10 +235,13 @@ open class LiveActivity : Activity() {
             isFocusable = false
             addView(groupCol)
         }
-        body.addView(groupScroll, LinearLayout.LayoutParams(dp(180), dp(360)))
+        body.addView(groupScroll, LinearLayout.LayoutParams(
+            dp(240), LinearLayout.LayoutParams.MATCH_PARENT))
 
         body.addView(View(this).apply { setBackgroundColor(0x55FFFFFF) },
-            LinearLayout.LayoutParams(dp(2), dp(360)).apply { setMargins(dp(12), 0, dp(12), 0) })
+            LinearLayout.LayoutParams(dp(2), LinearLayout.LayoutParams.MATCH_PARENT).apply {
+                setMargins(dp(16), 0, dp(16), 0)
+            })
 
         channelCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         channelScroll = ScrollView(this).apply {
@@ -245,13 +249,18 @@ open class LiveActivity : Activity() {
             isFocusable = false
             addView(channelCol)
         }
-        body.addView(channelScroll, LinearLayout.LayoutParams(0, dp(360), 1f))
+        body.addView(channelScroll, LinearLayout.LayoutParams(
+            0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
 
-        card.addView(body)
-        ov.addView(card, FrameLayout.LayoutParams(
-            dp(700), FrameLayout.LayoutParams.WRAP_CONTENT).apply {
-            gravity = Gravity.START or Gravity.CENTER_VERTICAL
-            setMargins(dp(48), 0, 0, 0)
+        // body 撑满面板剩余高度
+        card.addView(body, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+
+        val screenH = resources.displayMetrics.heightPixels
+        val vMargin = (screenH * 0.04f).toInt() // 上下各 4% → 面板占 92%
+
+        ov.addView(card, FrameLayout.LayoutParams(dp(900), FrameLayout.LayoutParams.MATCH_PARENT).apply {
+            gravity = Gravity.START
+            setMargins(dp(44), vMargin, 0, vMargin)
         })
         root.addView(ov, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
@@ -510,11 +519,11 @@ open class LiveActivity : Activity() {
             val tv = TextView(this).apply {
                 id = View.generateViewId()
                 text = cat.name
-                textSize = 15f
+                textSize = 20f
                 gravity = Gravity.CENTER_VERTICAL
                 maxLines = 1
                 ellipsize = android.text.TextUtils.TruncateAt.END
-                setPadding(dp(12), dp(10), dp(12), dp(10))
+                setPadding(dp(14), dp(16), dp(14), dp(16))
                 isFocusable = true
                 isClickable = true
                 setOnClickListener { channelRows.firstOrNull()?.requestFocus() }
@@ -529,7 +538,7 @@ open class LiveActivity : Activity() {
             }
             col.addView(tv, LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-                setMargins(0, 0, 0, dp(3))
+                setMargins(0, 0, 0, dp(5))
             })
             groupRows.add(tv)
         }
@@ -574,7 +583,7 @@ open class LiveActivity : Activity() {
                 id = View.generateViewId()
                 isFocusable = true
                 isClickable = true
-                setPadding(dp(12), dp(10), dp(12), dp(10))
+                setPadding(dp(14), dp(16), dp(14), dp(16))
                 setOnClickListener {
                     lastChannelFocusIdx = idx
                     currentGroupIdx = panelGroupIdx
@@ -590,13 +599,13 @@ open class LiveActivity : Activity() {
             }
             row.addView(TextView(this).apply {
                 text = ch.name.ifBlank { ch.pid }
-                textSize = 17f
+                textSize = 24f
                 maxLines = 1
                 ellipsize = android.text.TextUtils.TruncateAt.END
             })
             col.addView(row, LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-                setMargins(0, 0, 0, dp(3))
+                setMargins(0, 0, 0, dp(5))
             })
             channelRows.add(row)
         }
