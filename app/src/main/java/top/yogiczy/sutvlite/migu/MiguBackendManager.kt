@@ -43,18 +43,4 @@ class MiguBackendManager(private val context: Context) {
         
         return categories
     }
-    
-    /**
-     * 获取频道播放地址
-     */
-    suspend fun getChannelStreamUrl(pid: String): MiguStreamResult {
-        return MiguApi.getStreamUrl720p(pid)
-    }
-    
-    /**
-     * 清理缓存
-     */
-    fun clearCache() {
-        cacheDir.listFiles()?.forEach { it.delete() }
-    }
 }

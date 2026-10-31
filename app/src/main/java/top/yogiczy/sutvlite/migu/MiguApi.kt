@@ -217,39 +217,7 @@ object MiguApi {
         }
     }
 
-    suspend fun getStreamUrl(userId: String, token: String, pid: String, rateType: Int): MiguStreamResult {
-        val timestamp = nowMs().toString()
-        val appVersion = APP_VERSION
-        
-        val headers = mutableMapOf<String, String>(
-            "AppVersion" to appVersion,
-            "TerminalId" to "android",
-            "X-UP-CLIENT-CHANNEL-ID" to "$appVersion-99000-200300220100002"
-        )
-        
-        if (pid != "641886683" && pid != "641886773") {
-            headers["appCode"] = "miguvideo_default_android"
-        }
-        
-        if (rateType != 2 && userId.isNotEmpty() && token.isNotEmpty()) {
-            headers["UserId"] = userId
-            headers["UserToken"] = token
-        }
-        
-        val str = timestamp + pid + appVersion
-        val md5Hash = md5(str)
-        
-        val salt = 1230024
-        val sign = md5(md5Hash + "3ce941cc3cbc40528bfd1c64f9fdf6c0migu0123")
-        
-        val params = "?sign=$sign&rateType=$rateType&contId=$pid&timestamp=$timestamp&salt=$salt" +
-                "&flvEnable=true&super4k=true${if (rateType == 9) "&ott=true" else ""}" +
-                "&h265N=true&4kvivid=true&2Kvivid=true&vivid=2"
-        
-        return requestPlayUrl(PLAYURL_URL + params, headers, rateType, pid)
-    }
-    
-        private suspend fun requestPlayUrl(url: String, headers: Map<String, String>, rateType: Int, pid: String): MiguStreamResult {
+    private suspend fun requestPlayUrl(url: String, headers: Map<String, String>, rateType: Int, pid: String): MiguStreamResult {
         return try {
             doPlayUrlRequest(client, url, headers, rateType, pid)
         } catch (e: Exception) {

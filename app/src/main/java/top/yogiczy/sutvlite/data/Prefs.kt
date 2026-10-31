@@ -1,4 +1,4 @@
-package top.yogiczy.sutvlite.data
+﻿package top.yogiczy.sutvlite.data
 
 import top.yogiczy.mytv.core.data.utils.SP
 import top.yogiczy.sutvlite.migu.MiguCategory
@@ -31,14 +31,30 @@ object Prefs {
         return now
     }
 
+    // ---- 过滤缓存: 屏蔽规则或源列表没变就直接返回上次结果, 避免每次 onResume 全量复制 ----
+    private var cacheSrc: List<MiguCategory>? = null
+    private var cacheGroups: Set<String> = emptySet()
+    private var cacheChannels: Set<String> = emptySet()
+    private var cacheResult: List<MiguCategory> = emptyList()
+
     /** 应用屏蔽 */
+    @Synchronized
     fun filter(list: List<MiguCategory>): List<MiguCategory> {
         val bg = blockedGroups()
         val bc = blockedChannels()
-        if (bg.isEmpty() && bc.isEmpty()) return list
-        return list
-            .filter { it.name !in bg }
-            .map { cat -> cat.copy(dataList = cat.dataList.filter { it.pid !in bc }.toMutableList()) }
-            .filter { it.dataList.isNotEmpty() }
+        if (list === cacheSrc && bg == cacheGroups && bc == cacheChannels) return cacheResult
+
+        val result = if (bg.isEmpty() && bc.isEmpty()) {
+            list
+        } else {
+            list.filter { it.name !in bg }
+                .map { cat -> cat.copy(dataList = cat.dataList.filter { it.pid !in bc }.toMutableList()) }
+                .filter { it.dataList.isNotEmpty() }
+        }
+        cacheSrc = list
+        cacheGroups = bg
+        cacheChannels = bc
+        cacheResult = result
+        return result
     }
 }

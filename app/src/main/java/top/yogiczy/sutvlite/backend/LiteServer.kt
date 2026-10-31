@@ -1,4 +1,4 @@
-package top.yogiczy.sutvlite.backend
+﻿package top.yogiczy.sutvlite.backend
 
 import android.content.Context
 import android.util.Log
@@ -32,6 +32,13 @@ object LiteServer {
 
     private var startRetry = 0
 
+    /** 共用 IO 作用域 (避免每个请求都新建 scope) */
+    private val io = CoroutineScope(Dispatchers.IO)
+
+    /** 主清单缓存 (30 秒): 直播子清单必须实时, 但主清单可以缓存, 减少 CDN 请求 */
+    private val masterCache = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, String>>()
+    private const val MASTER_TTL = 30_000L
+
     /** 宽松 TLS + 强制 TLS1.2 的客户端 */
     private val proxyClient: OkHttpClient by lazy {
         LegacyTls.builder()
@@ -50,7 +57,7 @@ object LiteServer {
     }
 
     fun start(context: Context) {
-        CoroutineScope(Dispatchers.IO).launch {
+        io.launch {
             try {
                 runCatching {
                     Globals.cacheDir.listFiles()?.filter { it.name.startsWith("tsproxy_") }?.forEach { it.delete() }
@@ -94,7 +101,7 @@ object LiteServer {
         response: AsyncHttpServerResponse,
         fallback: Boolean,
     ) {
-        CoroutineScope(Dispatchers.IO).launch {
+        io.launch {
             try {
                 val pid = request.path.substringAfterLast("/")
                 val result = MiguApi.getStreamUrl720p(pid)
@@ -122,7 +129,7 @@ object LiteServer {
 
     /** 代理 m3u8 (重写内部 URL) 或 TS 分片 */
     private fun handleProxy(request: AsyncHttpServerRequest, response: AsyncHttpServerResponse) {
-        CoroutineScope(Dispatchers.IO).launch {
+        io.launch {
             try {
                 val encoded = request.path.substringAfter("/miguprox/")
                 val targetUrl = java.net.URLDecoder.decode(encoded, "UTF-8")
@@ -139,12 +146,8 @@ object LiteServer {
                         response.setContentType("application/vnd.apple.mpegurl")
                         response.send(rewritten)
                     } else {
-                        // TS 分片写临时文件, 保证二进制完整
-                        val temp = java.io.File(Globals.cacheDir, "tsproxy_${System.currentTimeMillis()}.ts")
-                        temp.writeBytes(bytes)
-                        response.setContentType("video/mp2t")
-                        response.sendFile(temp)
-                        temp.delete()
+                        // TS 分片直接发送二进制, 不再写临时文件 (省 eMMC 写入与延迟)
+                        response.send("video/mp2t", bytes)
                     }
                 }
             } catch (e: Exception) {
@@ -158,6 +161,13 @@ object LiteServer {
 
     private fun proxyM3u8(remoteUrl: String, response: AsyncHttpServerResponse) {
         try {
+            masterCache[remoteUrl]?.let { (t, body) ->
+                if (System.currentTimeMillis() - t < MASTER_TTL) {
+                    response.setContentType("application/vnd.apple.mpegurl")
+                    response.send(body)
+                    return
+                }
+            }
             val req = Request.Builder().url(remoteUrl).get().build()
             proxyClient.newCall(req).execute().use { resp ->
                 val body = resp.body()?.string() ?: ""
@@ -169,8 +179,10 @@ object LiteServer {
                     response.send("上游不是M3U8(HTTP ${resp.code()})")
                     return
                 }
+                val rewritten = rewriteM3u8(body, baseUrl)
                 response.setContentType("application/vnd.apple.mpegurl")
-                response.send(rewriteM3u8(body, baseUrl))
+                response.send(rewritten)
+                masterCache[remoteUrl] = System.currentTimeMillis() to rewritten
             }
         } catch (e: Exception) {
             Log.e(TAG, "代理M3U8失败: ${e.message}")

@@ -76,6 +76,8 @@ open class LiveActivity : Activity() {
     private var channelScroll: ScrollView? = null
     private var overlayVisible = false
     private var panelGroupIdx = 0
+    /** 已构建过频道列的分组下标 (重复获焦时跳过重建) */
+    private var builtGroupIdx = -1
     private var lastChannelFocusIdx = 0
     private var dismissJob: Job? = null
 
@@ -142,10 +144,7 @@ open class LiveActivity : Activity() {
         }
         rootView = root
 
-        val pv = LegacyPlayerView(this).apply {
-            setControllerEnabled(false)
-            setDiagVisible(false)
-        }
+        val pv = LegacyPlayerView(this).apply { setControllerEnabled(false) }
         player = pv
         root.addView(pv, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
@@ -267,6 +266,17 @@ open class LiveActivity : Activity() {
     }
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+
+    // ---- 复用的行背景 (避免每次焦点变化 new 一堆 GradientDrawable, 老盒子 GC 压力大) ----
+    private val bgRowFocus by lazy {
+        GradientDrawable().apply { cornerRadius = dp(7).toFloat(); setColor(0xFFFFFFFF.toInt()) }
+    }
+    private val bgRowSelected by lazy {
+        GradientDrawable().apply { cornerRadius = dp(7).toFloat(); setColor(0x33FFFFFF) }
+    }
+    private val bgRowNone by lazy {
+        GradientDrawable().apply { cornerRadius = dp(7).toFloat(); setColor(0x00000000) }
+    }
 
     // ==================== 加载 + 播放 ====================
 
@@ -484,6 +494,7 @@ open class LiveActivity : Activity() {
         if (overlayVisible || categories.isEmpty()) return
         overlayVisible = true
         panelGroupIdx = currentGroupIdx
+        builtGroupIdx = currentGroupIdx
         lastChannelFocusIdx = currentChannelIdx
         bannerCard?.visibility = View.GONE
         buildGroupRows()
@@ -528,8 +539,9 @@ open class LiveActivity : Activity() {
                 isClickable = true
                 setOnClickListener { channelRows.firstOrNull()?.requestFocus() }
                 setOnFocusChangeListener { _, focused ->
-                    if (focused) {
+                    if (focused && idx != panelGroupIdx) {
                         panelGroupIdx = idx
+                        builtGroupIdx = idx
                         buildChannelRows()
                         linkFocus()
                     }
@@ -550,15 +562,10 @@ open class LiveActivity : Activity() {
         groupRows.forEachIndexed { idx, tv ->
             val selected = idx == panelGroupIdx
             val focused = tv.isFocused
-            tv.background = GradientDrawable().apply {
-                cornerRadius = dp(7).toFloat()
-                setColor(
-                    when {
-                        focused -> 0xFFFFFFFF.toInt()
-                        selected -> 0x33FFFFFF
-                        else -> 0x00000000
-                    }
-                )
+            tv.background = when {
+                focused -> bgRowFocus
+                selected -> bgRowSelected
+                else -> bgRowNone
             }
             tv.setTextColor(
                 when {
@@ -567,7 +574,6 @@ open class LiveActivity : Activity() {
                     else -> 0xFFB9BDC7.toInt()
                 }
             )
-            tv.setTypeface(null, if (selected) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL)
         }
     }
 
@@ -616,10 +622,7 @@ open class LiveActivity : Activity() {
     private fun repaintChannels() {
         channelRows.forEach { row ->
             val focused = row.isFocused
-            row.background = GradientDrawable().apply {
-                cornerRadius = dp(7).toFloat()
-                setColor(if (focused) 0xFFFFFFFF.toInt() else 0x00000000)
-            }
+            row.background = if (focused) bgRowFocus else bgRowNone
             (row.getChildAt(0) as? TextView)?.setTextColor(
                 if (focused) 0xFF101010.toInt() else 0xFFE6E8EE.toInt()
             )
