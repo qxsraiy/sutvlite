@@ -47,15 +47,38 @@ class LiteApp : Application() {
 
         // 后台预热: 冷启动时 TLS/DNS/校时最慢, 提前热起来,
         // 用户点进直播时就是热路径, 避免"第一次打开一直加载中"
+        top.yogiczy.sutvlite.Logx.mark("Application.onCreate 完成")
+
         CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
             runCatching {
                 top.yogiczy.sutvlite.backend.PublicDns.lookup("play.miguvideo.com")
                 android.util.Log.i("LiteApp", "预热 DNS 完成")
             }
+            val t0 = android.os.SystemClock.elapsedRealtime()
             runCatching {
                 top.yogiczy.sutvlite.migu.MiguApi.warmUp()
-                android.util.Log.i("LiteApp", "预热 校时/接口 完成")
+                top.yogiczy.sutvlite.Logx.i(
+                    "预热",
+                    "校时+接口 完成, 耗时 ${android.os.SystemClock.elapsedRealtime() - t0}ms"
+                )
             }
+        }
+    }
+
+    /** 低内存时释放缓存, 避免老盒子被撑爆 (卡死主因之一) */
+    override fun onLowMemory() {
+        super.onLowMemory()
+        top.yogiczy.sutvlite.Logx.w("内存", "onLowMemory, 清理缓存")
+        runCatching { top.yogiczy.sutvlite.backend.PublicDns.clearCache() }
+        runCatching { top.yogiczy.sutvlite.backend.LiteServer.trimCaches() }
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) {
+            top.yogiczy.sutvlite.Logx.w("内存", "onTrimMemory($level), 清理缓存")
+            runCatching { top.yogiczy.sutvlite.backend.PublicDns.clearCache() }
+            runCatching { top.yogiczy.sutvlite.backend.LiteServer.trimCaches() }
         }
     }
 }

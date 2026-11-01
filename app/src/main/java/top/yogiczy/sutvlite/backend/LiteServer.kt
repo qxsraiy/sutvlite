@@ -1,5 +1,7 @@
 ﻿package top.yogiczy.sutvlite.backend
 
+import top.yogiczy.sutvlite.Logx
+
 import android.content.Context
 import android.util.Log
 import com.koushikdutta.async.http.server.AsyncHttpServer
@@ -10,6 +12,10 @@ import com.koushikdutta.async.AsyncServer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import top.yogiczy.mytv.core.data.utils.Globals
@@ -51,11 +57,24 @@ object LiteServer {
     }
 
     /** playurl 结果短缓存 (20s): 让"预热请求"和"播放器请求"命中同一 CDN 节点, 主清单缓存才能生效 */
+    /** 上游并发上限: 老盒子单核/双核, 同时太多上游请求会把 CPU 打满 -> 卡死 */
+    private val upstreamGate = kotlinx.coroutines.sync.Semaphore(4)
+
+    /** 同一 pid 的并发合并: ExoPlayer 重试时不会重复走 playurl */
+    private val inFlight = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.sync.Mutex>()
+
     private val playUrlCache = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, String>>()
     private const val PLAYURL_TTL = 20_000L
 
     fun invalidateChannel(pid: String) {
         playUrlCache.remove(pid)
+    }
+
+    /** 低内存时释放清单缓存 */
+    fun trimCaches() {
+        masterCache.clear()
+        playUrlCache.clear()
+        inFlight.clear()
     }
 
     /** 主清单缓存 (30 秒): 直播子清单必须实时, 但主清单可以缓存, 减少 CDN 请求 */
@@ -126,39 +145,58 @@ object LiteServer {
         fallback: Boolean,
     ) {
         io.launch {
+            val pid = request.path.substringAfterLast("/")
+            val t0 = android.os.SystemClock.elapsedRealtime()
             try {
-                val pid = request.path.substringAfterLast("/")
-
-                // 1) 20 秒内复用上次 playurl 结果 (同一 CDN 节点), 让主清单缓存生效
-                var streamUrl = playUrlCache[pid]?.let { (t, u) ->
-                    if (System.currentTimeMillis() - t < PLAYURL_TTL) u else null
-                }
+                val streamUrl = fetchStreamUrl(pid)
                 if (streamUrl == null) {
-                    val result = MiguApi.getStreamUrl720p(pid)
-                    if (!result.isSuccess) {
-                        Log.e(TAG, "获取播放地址失败: ${result.error}")
-                        response.code(502)
-                        response.setContentType("text/plain")
-                        response.send("获取播放地址失败: ${result.error}")
-                        return@launch
-                    }
-                    streamUrl = result.url
-                    playUrlCache[pid] = System.currentTimeMillis() to streamUrl
+                    response.code(502)
+                    response.setContentType("text/plain")
+                    response.send("获取播放地址失败")
+                    Logx.e("代理", "pid=$pid 取流失败")
+                    return@launch
                 }
-
                 val finalUrl = resolveRedirect(streamUrl).ifEmpty { streamUrl }
                 if (!fallback) {
                     response.redirect(finalUrl)
                 } else {
                     proxyM3u8(finalUrl, response)
                 }
+                Logx.i(
+                    "代理",
+                    "pid=$pid 模式=${if (fallback) "代理" else "302"} 耗时 ${android.os.SystemClock.elapsedRealtime() - t0}ms"
+                )
             } catch (e: Exception) {
-                Log.e(TAG, "处理频道请求失败: ${e.message}")
-                // 上游异常 -> 丢弃该频道的 playurl 缓存, 下次重试重新签发节点
-                runCatching { playUrlCache.keys.firstOrNull()?.let { invalidateChannel(it) } }
+                Logx.e("代理", "pid=$pid 异常: ${e.message}", e)
+                invalidateChannel(pid)
                 response.code(502)
                 response.setContentType("text/plain")
                 response.send("错误: ${e.message}")
+            }
+        }
+    }
+
+    /** 同一 pid 串行 + 全局上游并发上限: 避免 ExoPlayer 重试风暴把 CPU 打满 (老盒子卡死主因) */
+    private suspend fun fetchStreamUrl(pid: String): String? {
+        playUrlCache[pid]?.let { (t, u) ->
+            if (System.currentTimeMillis() - t < PLAYURL_TTL) return u
+        }
+        val mutex = inFlight.getOrPut(pid) { kotlinx.coroutines.sync.Mutex() }
+        return mutex.withLock {
+            playUrlCache[pid]?.let { (t, u) ->
+                if (System.currentTimeMillis() - t < PLAYURL_TTL) return@withLock u
+            }
+            upstreamGate.withPermit {
+                val t0 = android.os.SystemClock.elapsedRealtime()
+                val result = MiguApi.getStreamUrl720p(pid)
+                if (!result.isSuccess || result.url.isEmpty()) {
+                    Logx.e("代理", "playurl 失败: ${result.error}")
+                    null
+                } else {
+                    playUrlCache[pid] = System.currentTimeMillis() to result.url
+                    Logx.i("代理", "playurl ok 耗时 ${android.os.SystemClock.elapsedRealtime() - t0}ms")
+                    result.url
+                }
             }
         }
     }

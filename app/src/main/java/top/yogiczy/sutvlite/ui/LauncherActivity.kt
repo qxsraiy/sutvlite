@@ -1,16 +1,34 @@
-package top.yogiczy.sutvlite.ui
+﻿package top.yogiczy.sutvlite.ui
+
+import android.app.Activity
+import android.content.Intent
+import android.os.Bundle
+import top.yogiczy.sutvlite.Logx
 
 /**
  * 桌面入口 (HOME) —— 默认在 AndroidManifest 里 enabled="false"。
  *
- * 设计要点:
- *  - 桌面身份与「普通启动入口」彻底分离: 只有本 Activity 参与 HOME,
- *    LiveActivity 只做 LAUNCHER(应用图标) 入口
- *  - 默认禁用 -> 装上就是普通 app, 永远不会被系统自动选成默认桌面
- *  - 设置里的「锁定为桌面」开关只做一件事: enable / disable 本组件
- *    (PackageManager.setComponentEnabledSetting, 自己的组件无需 root)
- *  - 关闭时它会重新变成普通 app, 系统桌面回落到其它 launcher
- *
- * 内容直接继承 LiveActivity: 成为桌面时按 HOME 就是直播画面。
+ * 重要: 这里**不能**继承 LiveActivity。
+ * 之前继承 LiveActivity 时, 作为桌面的实例会和已存在的 LiveActivity 同时存活,
+ * 两个 ExoPlayer 抢海思硬件解码器 -> 整机卡死。
+ * 所以现在它只是一个"空壳转发": 启动 LiveActivity(singleTask, 复用已有实例) 后立即结束自己。
  */
-class LauncherActivity : LiveActivity()
+class LauncherActivity : Activity() {
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        Logx.mark("LauncherActivity.onCreate (HOME 被按下)")
+        // singleTask + CLEAR_TOP: 复用已在运行的直播实例, 不会产生第二个播放器
+        val i = Intent(this, LiveActivity::class.java).apply {
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK
+                    or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                    or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            )
+        }
+        runCatching { startActivity(i) }
+            .onFailure { Logx.e("Launcher", "转发 LiveActivity 失败", it) }
+        finish()
+        overridePendingTransition(0, 0)
+    }
+}

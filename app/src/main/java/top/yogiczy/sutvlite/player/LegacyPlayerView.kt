@@ -1,5 +1,7 @@
 ﻿package top.yogiczy.sutvlite.player
 
+import top.yogiczy.sutvlite.Logx
+
 import android.content.Context
 import android.net.Uri
 import android.os.Handler
@@ -88,6 +90,7 @@ class LegacyPlayerView @JvmOverloads constructor(
     private val retryRunnable = Runnable {
         exoPlayer?.let { p ->
             Log.w(TAG, "瞬时错误重试 #$transientRetries")
+            Logx.w("播放器", "瞬时错误重试 #$transientRetries")
             runCatching { p.prepare(); p.playWhenReady = true }
             scheduleWatchdog()
         }
@@ -166,6 +169,7 @@ class LegacyPlayerView @JvmOverloads constructor(
         mediaFallbackTried = false
         transientRetries = 0
         retryHandler.removeCallbacks(retryRunnable)
+        Logx.i("播放器", "play(${url.take(70)})")
         useExo(url)
         scheduleWatchdog()
     }
@@ -215,7 +219,20 @@ class LegacyPlayerView @JvmOverloads constructor(
             return
         }
         val ts = DefaultTrackSelector(context)
-        val p = ExoPlayer.Builder(context).setTrackSelector(ts).build()
+        // 缓冲调小: 老盒子 1GB 内存 + 海思解码器, 默认 50 秒缓冲太重
+        val loadControl = com.google.android.exoplayer2.DefaultLoadControl.Builder()
+            .setBufferDurationsMs(
+                15_000, // minBufferMs
+                30_000, // maxBufferMs
+                1_500,  // bufferForPlaybackMs
+                3_000   // bufferForPlaybackAfterRebufferMs
+            )
+            .build()
+        val p = ExoPlayer.Builder(context)
+            .setTrackSelector(ts)
+            .setLoadControl(loadControl)
+            .build()
+        Logx.i("播放器", "ExoPlayer 已创建 (缓冲 15s/30s)")
         exoPlayer = p
         exoView.player = p
         p.addListener(object : Player.Listener {
@@ -238,6 +255,7 @@ class LegacyPlayerView @JvmOverloads constructor(
                 transientRetries = 0
                 retryHandler.removeCallbacks(retryRunnable)
                 Log.i(TAG, "第一帧已渲染")
+                Logx.i("播放器", "第一帧已渲染 ✅")
                 onFirstFrame?.invoke()
             }
 

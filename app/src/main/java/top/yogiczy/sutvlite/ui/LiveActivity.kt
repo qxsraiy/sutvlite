@@ -1,5 +1,7 @@
 ﻿package top.yogiczy.sutvlite.ui
 
+import top.yogiczy.sutvlite.Logx
+
 import android.app.Activity
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -103,9 +105,17 @@ open class LiveActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         requestWindowFeature(android.view.Window.FEATURE_NO_TITLE)
         super.onCreate(savedInstanceState)
+        instanceCount++
+        Logx.mark("LiveActivity.onCreate 实例数=$instanceCount")
         buildUi()
         registerNetReceiver()
         loadAndPlay()
+    }
+
+    companion object {
+        /** 当前存活的 LiveActivity 实例数 (>1 说明有双播放器风险) */
+        @Volatile
+        var instanceCount = 0
     }
 
     override fun onResume() {
@@ -121,6 +131,8 @@ open class LiveActivity : Activity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        instanceCount = (instanceCount - 1).coerceAtLeast(0)
+        Logx.mark("LiveActivity.onDestroy 剩余实例=$instanceCount")
         // 先停协程, 再拆 View/播放器, 避免"视图已销毁仍被回调访问"
         scopeJob.cancel()
         unregisterNetReceiver()
@@ -293,8 +305,10 @@ open class LiveActivity : Activity() {
             }
             ensureLocalServer()
 
+            Logx.i("启动", "开始加载频道列表")
             var attempt = 0
             while (attempt < 5) {
+                val t0 = android.os.SystemClock.elapsedRealtime()
                 attempt++
                 showLoading(if (attempt == 1) "加载频道…" else "加载频道…($attempt)")
                 categories = withContext(Dispatchers.IO) {
@@ -304,6 +318,10 @@ open class LiveActivity : Activity() {
                         Prefs.filter(all)
                     }.getOrElse { emptyList() }
                 }
+                Logx.i(
+                    "启动",
+                    "频道加载 第${attempt}次: ${categories.size} 组, 耗时 ${android.os.SystemClock.elapsedRealtime() - t0}ms"
+                )
                 if (categories.isNotEmpty()) break
                 delay(3000)
             }
@@ -336,6 +354,7 @@ open class LiveActivity : Activity() {
         playedFirstFrame = false
         hardRestartDone = false
         showLoading("连接中…")
+        Logx.i("换台", "→ ${ch.name} (${ch.pid}) 代理=$useProxy")
         showBanner(ch.name)
 
         player?.onError = { msg ->
@@ -343,6 +362,7 @@ open class LiveActivity : Activity() {
                 if (alive() && !playedFirstFrame) {
                     hideLoading()
                     showHint("播放失败: $msg")
+                    Logx.e("播放", "失败: $msg")
                 }
             }
         }
@@ -403,13 +423,17 @@ open class LiveActivity : Activity() {
             .readTimeout(40, java.util.concurrent.TimeUnit.SECONDS)
             .build()
         val req = okhttp3.Request.Builder().url(url).build()
+        val t0 = android.os.SystemClock.elapsedRealtime()
         client.newCall(req).execute().use { resp ->
             val ok = resp.isSuccessful
-            android.util.Log.i("LiveActivity", "预热清单: HTTP ${resp.code()}")
+            Logx.i(
+                "预热",
+                "清单 HTTP ${resp.code()} 耗时 ${android.os.SystemClock.elapsedRealtime() - t0}ms"
+            )
             ok
         }
     } catch (t: Throwable) {
-        android.util.Log.w("LiveActivity", "预热异常: ${t.message}")
+        Logx.e("预热", "异常: ${t.message}")
         false
     }
 
