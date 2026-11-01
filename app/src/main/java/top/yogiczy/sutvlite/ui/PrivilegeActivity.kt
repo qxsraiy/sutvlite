@@ -18,7 +18,7 @@ import top.yogiczy.sutvlite.root.RootActions
 import top.yogiczy.sutvlite.root.RootManager
 
 /**
- * 特权功能: Root 授权 / 诊断 / 系统应用 / 锁定桌面 / 进程守护 / 开机自启
+ * 特权功能: Root 授权 / 诊断 / 系统应用 / 锁定桌面 / 开机自启
  */
 class PrivilegeActivity : Activity() {
 
@@ -32,7 +32,7 @@ class PrivilegeActivity : Activity() {
     private lateinit var rootTv: TextView
 
     private var cachedSystem = false
-    private var cachedOom = false
+
     private var cachedLauncher = false
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
@@ -131,17 +131,6 @@ class PrivilegeActivity : Activity() {
             }
         }))
 
-        page.addView(toggleRow("进程守护", { if (cachedOom) "开" else "关" }, { on, cb ->
-            cb("处理中…")
-            CoroutineScope(Dispatchers.IO).launch {
-                val r = RootActions.setOomPriority(on)
-                withContext(Dispatchers.Main) {
-                    cachedOom = on
-                    cb((if (on) "开 · " else "关 · ") + r)
-                }
-            }
-        }))
-
         page.addView(sectionTitle("启动"))
         page.addView(toggleRow("开机自启", { if (SP.getBoolean("boot_launch", false)) "开" else "关" }, { on, cb ->
             SP.putBoolean("boot_launch", on)
@@ -167,14 +156,13 @@ class PrivilegeActivity : Activity() {
                 else -> "Root: 未检测到 root"
             }
             if (granted) {
-                val (s, o, l) = withContext(Dispatchers.IO) {
-                    Triple(
+                val (s, l) = withContext(Dispatchers.IO) {
+                    Pair(
                         runCatching { RootActions.isSystemApp() }.getOrDefault(false),
-                        runCatching { RootActions.checkOomPriority() }.getOrDefault(false),
                         runCatching { RootActions.isDefaultLauncher() }.getOrDefault(false),
                     )
                 }
-                cachedSystem = s; cachedOom = o; cachedLauncher = l
+                cachedSystem = s; cachedLauncher = l
                 rebuildValues()
             }
         }
@@ -187,7 +175,6 @@ class PrivilegeActivity : Activity() {
         valueViews.forEach { (tv, kind) ->
             tv.text = when (kind) {
                 "sys" -> if (cachedSystem) "开" else "关"
-                "oom" -> if (cachedOom) "开" else "关"
                 "lau" -> if (cachedLauncher) "开" else "关"
                 else -> tv.text
             }
@@ -219,7 +206,6 @@ class PrivilegeActivity : Activity() {
         c.addView(v)
         valueViews.add(v to when (title) {
             "安装为系统应用" -> "sys"
-            "进程守护" -> "oom"
             "锁定为桌面" -> "lau"
             else -> ""
         })

@@ -7,7 +7,7 @@ import top.yogiczy.mytv.core.data.utils.Globals
 import top.yogiczy.mytv.core.data.utils.SP
 
 /**
- * Root 动作：安装/移除系统应用 + OOM 防清理 + 锁定桌面 + 诊断。
+ * Root 动作：安装/移除系统应用 + 锁定桌面 + 诊断。
  * 所有函数必须在 IO 线程调用；返回值为给用户看的结果文案。
  */
 object RootActions {
@@ -103,30 +103,6 @@ object RootActions {
         } else {
             "删除后仍存在，可能被系统保护，请重启后再试"
         }
-    }
-
-    // ─── OOM 防清理 ───
-
-    fun setOomPriority(enable: Boolean): String {
-        if (!RootManager.isGranted && !RootManager.requestRoot()) return "失败: 未获得 root 权限"
-        val pid = Process.myPid()
-        val adj = if (enable) "-17" else "0"
-        val scoreAdj = if (enable) "-1000" else "0"
-        val r1 = su("echo $adj > /proc/$pid/oom_adj")
-        val r2 = su("echo $scoreAdj > /proc/$pid/oom_score_adj")
-        val now = su("cat /proc/$pid/oom_adj 2>/dev/null")?.output?.trim()
-        return when {
-            r1?.success == true || r2?.success == true ->
-                if (enable) "进程守护已开启（当前 oom_adj=$now）" else "进程守护已关闭"
-            else -> "设置失败: ${r1?.output ?: ""} ${r2?.output ?: ""}".trim()
-        }
-    }
-
-    fun checkOomPriority(): Boolean {
-        if (!RootManager.isGranted) return false
-        val pid = Process.myPid()
-        val v = su("cat /proc/$pid/oom_adj 2>/dev/null")?.output?.trim()?.toIntOrNull()
-        return v != null && v < 0
     }
 
     // ─── 锁定为桌面 (桌面身份 = LauncherActivity, 默认禁用) ───

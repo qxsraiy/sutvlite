@@ -1,4 +1,4 @@
-package top.yogiczy.sutvlite.ui
+﻿package top.yogiczy.sutvlite.ui
 
 import android.app.Activity
 import android.content.Intent
@@ -57,7 +57,7 @@ class LiteSettingsActivity : Activity() {
             makeCard("分组和频道管理", "显示 / 隐藏 分组与频道") {
                 startActivity(Intent(this, GroupChannelActivity::class.java))
             },
-            makeCard("特权功能", "Root · 系统应用 · 锁定桌面 · 进程守护") {
+            makeCard("特权功能", "Root · 系统应用 · 锁定桌面") {
                 startActivity(Intent(this, PrivilegeActivity::class.java))
             },
         )
