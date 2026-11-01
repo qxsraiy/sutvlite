@@ -364,17 +364,53 @@ open class LiveActivity : Activity() {
             }
         }
         autoSwitchJob?.cancel()
-        if (useProxy) {
-            player?.play("http://127.0.0.1:10481/migufb/${ch.pid}", isLive = true)
-            armAutoSwitch()
-        } else {
-            scope.launch {
-                val direct = withContext(Dispatchers.IO) { resolveDirect(ch.pid) }
-                val url = direct ?: "http://127.0.0.1:10481/migufb/${ch.pid}"
-                player?.play(url, isLive = true)
-                armAutoSwitch()
+        // 关键: 冷启动时本地服务可能还没 listen, 首次请求还要做 TLS/DNS/校时/playurl/拉清单,
+        // 直接甩给播放器会超时 -> "一直加载中"。这里先等就绪 + 预热, 再播放。
+        scope.launch {
+            val url = "http://127.0.0.1:10481/migufb/${ch.pid}"
+            val ready = top.yogiczy.sutvlite.backend.LiteServer.awaitReady(15_000)
+            if (!ready) {
+                showLoading("服务启动中…")
+                top.yogiczy.sutvlite.backend.LiteServer.start(this@LiveActivity)
+                top.yogiczy.sutvlite.backend.LiteServer.awaitReady(10_000)
             }
+            if (player == null || !alive()) return@launch
+            if (!useProxy) {
+                val direct = withContext(Dispatchers.IO) { resolveDirect(ch.pid) }
+                if (direct != null) {
+                    player?.play(direct, isLive = true)
+                    armAutoSwitch()
+                    return@launch
+                }
+            }
+            // 预热: 自己先拉一次清单 (DNS/TLS/校时/playurl/m3u8 全部热起来并进缓存)
+            showLoading("连接中…")
+            val warmed = withContext(Dispatchers.IO) { prefetchManifest(url) }
+            if (currentChannelList.getOrNull(currentChannelIdx)?.pid != ch.pid) return@launch
+            player?.play(url, isLive = true)
+            if (!warmed) {
+                // 预热失败也照常交给播放器, 由 10 秒硬重启 + 代理/直连互换兜底
+                android.util.Log.w("LiveActivity", "预热失败, 直接播放: ${ch.name}")
+            }
+            armAutoSwitch()
         }
+    }
+
+    /** 预热: 用 app 自己的 OkHttp 拉一次代理清单 (把冷启动开销提前吃在"连接中…"里) */
+    private fun prefetchManifest(url: String): Boolean = try {
+        val client = top.yogiczy.sutvlite.backend.LegacyTls.builder()
+            .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(40, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
+        val req = okhttp3.Request.Builder().url(url).build()
+        client.newCall(req).execute().use { resp ->
+            val ok = resp.isSuccessful
+            android.util.Log.i("LiveActivity", "预热清单: HTTP ${resp.code()}")
+            ok
+        }
+    } catch (t: Throwable) {
+        android.util.Log.w("LiveActivity", "预热异常: ${t.message}")
+        false
     }
 
     /** 8 秒无首帧 → 代理/直连互换 */

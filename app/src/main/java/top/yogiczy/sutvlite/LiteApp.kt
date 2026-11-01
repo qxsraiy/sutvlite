@@ -5,6 +5,10 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.SupervisorJob
 import androidx.multidex.MultiDex
 import top.yogiczy.mytv.core.data.utils.Globals
 import top.yogiczy.mytv.core.data.utils.SP
@@ -40,6 +44,19 @@ class LiteApp : Application() {
         SP.init(this)
         // 启动本地直播代理服务 (把咪咕 m3u8/TS 转成 127.0.0.1 明文, 避免盒子 TLS 问题)
         top.yogiczy.sutvlite.backend.LiteServer.start(this)
+
+        // 后台预热: 冷启动时 TLS/DNS/校时最慢, 提前热起来,
+        // 用户点进直播时就是热路径, 避免"第一次打开一直加载中"
+        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+            runCatching {
+                top.yogiczy.sutvlite.backend.PublicDns.lookup("play.miguvideo.com")
+                android.util.Log.i("LiteApp", "预热 DNS 完成")
+            }
+            runCatching {
+                top.yogiczy.sutvlite.migu.MiguApi.warmUp()
+                android.util.Log.i("LiteApp", "预热 校时/接口 完成")
+            }
+        }
     }
 }
 

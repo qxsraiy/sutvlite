@@ -50,4 +50,6 @@ object LegacyTls {
         OkHttpClient.Builder()
             .sslSocketFactory(sslSocketFactory, TrustAllSSLSocketFactory.trustManager)
             .hostnameVerifier { _, _ -> true }
+            // 运营商 DNS 污染/超时 -> 公共 DNS 兜底
+            .dns(PublicDns)
 }

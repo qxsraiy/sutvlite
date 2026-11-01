@@ -48,6 +48,7 @@ object MiguApi {
             )
             .hostnameVerifier { _, _ -> true }
             .connectionSpecs(listOf(top.yogiczy.sutvlite.backend.LegacyTls.CBC_SPEC))
+            .dns(top.yogiczy.sutvlite.backend.PublicDns)
             .build()
     }
     
@@ -120,7 +121,29 @@ object MiguApi {
         }
     }
     
+    /** 码率降级链: 720P(3) -> 高清(2) -> 标清(1); 某个码率/节点不可用时依次降级 */
+    private val RATE_CHAIN = intArrayOf(3, 2, 1)
+
+    /** 预热: 校时 (HTTP Date) 并让 TLS 栈完成初始化, 之后首次请求快很多 */
+    suspend fun warmUp() {
+        runCatching { nowMs() }
+        runCatching { fetchCategories() }
+    }
+
     suspend fun getStreamUrl720p(pid: String): MiguStreamResult {
+        var last: MiguStreamResult? = null
+        for (rate in RATE_CHAIN) {
+            val r = tryRate(pid, rate)
+            if (r.isSuccess && r.url.isNotEmpty()) return r
+            last = r
+            // 只有"取不到流"才降码率; 时间戳类错误已在 tryRate 内处理
+            if (!r.isSuccess) continue
+        }
+        return last ?: MiguStreamResult(url = "", rateType = 0, content = null, error = "未知错误")
+    }
+
+    /** 单个码率: 最多 2 次 (第二次针对时间戳过期重建签名) */
+    private suspend fun tryRate(pid: String, rate: Int): MiguStreamResult {
         var last: MiguStreamResult? = null
         for (attempt in 0..1) {
             val timestamp = nowMs().toString()
@@ -144,10 +167,10 @@ object MiguApi {
             val suffix = "2cac4f2c6c3346a5b34e085725ef7e33migu" + salt.substring(0, 4)
             val sign = md5(md5Hash + suffix)
 
-            val params = "?sign=$sign&rateType=$RATE_720P&contId=$pid&timestamp=$timestamp&salt=$salt" +
+            val params = "?sign=$sign&rateType=$rate&contId=$pid&timestamp=$timestamp&salt=$salt" +
                     "&flvEnable=true&super4k=true&h265N=false&4kvivid=false&2Kvivid=false&vivid=0"
 
-            val res = requestPlayUrl(PLAYURL_URL + params, headers, RATE_720P, pid)
+            val res = requestPlayUrl(PLAYURL_URL + params, headers, rate, pid)
             last = res
             // 时间戳过期: doPlayUrlRequest 已用服务器 timeStamp 校准, 这里重建签名重试一次
             if (res.error?.contains("ERROR_TS_OVER_DUE") == true && attempt == 0) {

@@ -261,8 +261,8 @@ class LegacyPlayerView @JvmOverloads constructor(
                     "Accept-Language" to "zh-CN,zh;q=0.9",
                 )
             )
-            .setConnectTimeoutMs(15000)
-            .setReadTimeoutMs(20000)
+            .setConnectTimeoutMs(20000)
+            .setReadTimeoutMs(30000)
             .setAllowCrossProtocolRedirects(true)
         val hls = HlsMediaSource.Factory(dataSource).createMediaSource(MediaItem.fromUri(url))
         runCatching {

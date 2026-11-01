@@ -35,6 +35,29 @@ object LiteServer {
     /** 共用 IO 作用域 (避免每个请求都新建 scope) */
     private val io = CoroutineScope(Dispatchers.IO)
 
+    /** 服务是否已成功 listen (冷启动时 Activity 要等它, 否则首次请求直接 Connection refused) */
+    @Volatile private var ready = false
+
+    fun isReady(): Boolean = ready
+
+    /** 等待服务就绪, 返回是否就绪 */
+    suspend fun awaitReady(timeoutMs: Long): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (ready) return true
+            kotlinx.coroutines.delay(100)
+        }
+        return ready
+    }
+
+    /** playurl 结果短缓存 (20s): 让"预热请求"和"播放器请求"命中同一 CDN 节点, 主清单缓存才能生效 */
+    private val playUrlCache = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, String>>()
+    private const val PLAYURL_TTL = 20_000L
+
+    fun invalidateChannel(pid: String) {
+        playUrlCache.remove(pid)
+    }
+
     /** 主清单缓存 (30 秒): 直播子清单必须实时, 但主清单可以缓存, 减少 CDN 请求 */
     private val masterCache = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, String>>()
     private const val MASTER_TTL = 30_000L
@@ -82,6 +105,7 @@ object LiteServer {
                 }
 
                 server.listen(AsyncServer.getDefault(), PORT)
+                ready = true
                 Log.i(TAG, "本地服务已启动: $serverUrl")
             } catch (ex: Exception) {
                 Log.e(TAG, "本地服务启动失败: ${ex.message}")
@@ -104,15 +128,25 @@ object LiteServer {
         io.launch {
             try {
                 val pid = request.path.substringAfterLast("/")
-                val result = MiguApi.getStreamUrl720p(pid)
-                if (!result.isSuccess) {
-                    Log.e(TAG, "获取播放地址失败: ${result.error}")
-                    response.code(502)
-                    response.setContentType("text/plain")
-                    response.send("获取播放地址失败: ${result.error}")
-                    return@launch
+
+                // 1) 20 秒内复用上次 playurl 结果 (同一 CDN 节点), 让主清单缓存生效
+                var streamUrl = playUrlCache[pid]?.let { (t, u) ->
+                    if (System.currentTimeMillis() - t < PLAYURL_TTL) u else null
                 }
-                val finalUrl = resolveRedirect(result.url).ifEmpty { result.url }
+                if (streamUrl == null) {
+                    val result = MiguApi.getStreamUrl720p(pid)
+                    if (!result.isSuccess) {
+                        Log.e(TAG, "获取播放地址失败: ${result.error}")
+                        response.code(502)
+                        response.setContentType("text/plain")
+                        response.send("获取播放地址失败: ${result.error}")
+                        return@launch
+                    }
+                    streamUrl = result.url
+                    playUrlCache[pid] = System.currentTimeMillis() to streamUrl
+                }
+
+                val finalUrl = resolveRedirect(streamUrl).ifEmpty { streamUrl }
                 if (!fallback) {
                     response.redirect(finalUrl)
                 } else {
@@ -120,6 +154,8 @@ object LiteServer {
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "处理频道请求失败: ${e.message}")
+                // 上游异常 -> 丢弃该频道的 playurl 缓存, 下次重试重新签发节点
+                runCatching { playUrlCache.keys.firstOrNull()?.let { invalidateChannel(it) } }
                 response.code(502)
                 response.setContentType("text/plain")
                 response.send("错误: ${e.message}")
