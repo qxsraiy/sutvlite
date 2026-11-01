@@ -1,4 +1,4 @@
-﻿package top.yogiczy.sutvlite.ui
+package top.yogiczy.sutvlite.ui
 
 import top.yogiczy.sutvlite.Logx
 
@@ -299,12 +299,18 @@ open class LiveActivity : Activity() {
         starting = true
         showLoading("启动中…")
         scope.launch {
-            // 等网络就绪 (开机后 DHCP 可能没完成)
+            // 等网络就绪: 显示具体原因, 每 5 秒复查一次 (有网立刻继续)
             var waited = 0
-            while (!isNetworkReady() && waited < 45_000) {
-                showLoading("等待网络…")
-                delay(1000); waited += 1000
+            while (!isNetworkReady() || !hasDefaultRoute()) {
+                showLoading(networkProblemText())
+                delay(2000)
+                waited += 2000
+                // 超过 2 分钟仍无网络: 保持提示但放慢复查节奏, 不阻塞界面
+                if (waited > 120_000 && waited % 30_000 == 0) {
+                    Logx.w("网络", "长时间无网络: ${networkProblemText()}")
+                }
             }
+            showLoading("网络已连接，加载中…")
             ensureLocalServer()
 
             Logx.i("启动", "开始加载频道列表")
@@ -329,7 +335,7 @@ open class LiveActivity : Activity() {
             }
             starting = false
             if (categories.isEmpty()) {
-                showLoading("频道加载失败，网络恢复后自动重试")
+                showLoading("频道加载失败：${networkProblemText()}，自动重试中")
                 return@launch
             }
 
@@ -815,6 +821,23 @@ open class LiveActivity : Activity() {
     }
 
     // ==================== 网络 ====================
+
+    /** 有无默认路由 (网线插上但没拿到 IP 时为 false) */
+    private fun hasDefaultRoute(): Boolean = try {
+        java.io.File("/proc/net/route").readLines().drop(1).any { line ->
+            val cols = line.split('\t', ' ').filter { it.isNotBlank() }
+            cols.size >= 2 && cols[1] == "00000000"
+        }
+    } catch (_: Throwable) {
+        false
+    }
+
+    /** 无网络时的明确提示 (区分: 没插网线 / 没拿到IP / 正常) */
+    private fun networkProblemText(): String = when {
+        !isNetworkReady() -> "网线未连接，请检查网线/路由器"
+        !hasDefaultRoute() -> "网络未就绪（未获取到 IP）"
+        else -> "网络已连接"
+    }
 
     private fun isNetworkReady(): Boolean = try {
         val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
