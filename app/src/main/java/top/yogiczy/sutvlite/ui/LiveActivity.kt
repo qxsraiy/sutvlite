@@ -92,6 +92,8 @@ open class LiveActivity : Activity() {
     private var restartJob: Job? = null
     /** 本次打开是否已做过一次硬重启 (避免死循环) */
     private var hardRestartDone = false
+    /** 连续失败次数: 超过上限就停止重试, 避免无限重试风暴把盒子拖死 */
+    private var failStreak = 0
     private var bannerHideJob: Job? = null
     private var hintHideJob: Job? = null
     private var starting = false
@@ -353,6 +355,7 @@ open class LiveActivity : Activity() {
         SP.putString("last_pid", ch.pid)
         playedFirstFrame = false
         hardRestartDone = false
+        failStreak = 0
         showLoading("连接中…")
         Logx.i("换台", "→ ${ch.name} (${ch.pid}) 代理=$useProxy")
         showBanner(ch.name)
@@ -361,13 +364,23 @@ open class LiveActivity : Activity() {
             runOnUiThread {
                 if (alive() && !playedFirstFrame) {
                     hideLoading()
-                    showHint("播放失败: $msg")
-                    Logx.e("播放", "失败: $msg")
+                    failStreak++
+                    Logx.e("播放", "失败(${failStreak}): $msg")
+                    if (failStreak >= 3) {
+                        // 停止重试, 保持界面可响应 (切换/返回都正常), 避免无限重试拖死盒子
+                        autoSwitchJob?.cancel()
+                        restartJob?.cancel()
+                        showHint("播放失败，请按 OK 换台")
+                        Logx.w("播放", "连续失败 $failStreak 次, 停止自动重试")
+                    } else {
+                        showHint("播放失败: $msg")
+                    }
                 }
             }
         }
         player?.onFirstFrame = {
             playedFirstFrame = true
+            failStreak = 0
             autoSwitchJob?.cancel()
             restartJob?.cancel()
             runOnUiThread { if (alive()) hideLoading() }

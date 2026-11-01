@@ -6,35 +6,66 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
 
 /**
  * 极简直播 诊断日志
  *
  * 双通道:
- *   1) logcat (tag = JJB)  —— adb logcat -s JJB
- *   2) 落盘 files/lite.log —— 盒子重启/卡死也不丢, adb pull 可取
+ *   1) logcat (tag = JJB)   —— adb logcat -s JJB
+ *   2) 落盘 files/lite.log  —— 盒子重启/卡死也不丢, adb pull 可取
  *
- * 用法: 记录关键阶段与耗时, 便于定位"卡在加载中"和"盒子卡死"
- *   Logx.mark("启动")     // 记录相对进程启动的毫秒数
- *   Logx.i("预热", "HTTP 200 1234ms")
+ * 重要: 落盘走**独立后台线程 + 有界队列**。
+ * 早期版本在调用线程直接 appendText, 主线程打日志会做磁盘 I/O,
+ * 在老盒子 eMMC 上足以造成 ANR (整个桌面卡死)。现在主线程只入队, 不碰磁盘。
  */
 object Logx {
 
     private const val TAG = "JJB"
     private const val MAX_BYTES = 256 * 1024L
+    private const val QUEUE_CAP = 512
 
     @Volatile
     var enabled: Boolean = true
 
-    /** 进程启动时刻 (SystemClock.elapsedRealtime, 不受墙钟漂移影响) */
     private val startedAt = android.os.SystemClock.elapsedRealtime()
-
     private val fmt = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US)
+
+    private val queue = LinkedBlockingQueue<String>(QUEUE_CAP)
+
+    @Volatile
+    private var writerStarted = false
 
     private fun rel(): String = "${android.os.SystemClock.elapsedRealtime() - startedAt}ms"
 
-    @Synchronized
-    private fun write(line: String) {
+    private fun ensureWriter() {
+        if (writerStarted) return
+        synchronized(this) {
+            if (writerStarted) return
+            writerStarted = true
+            Thread({
+                while (true) {
+                    try {
+                        val line = queue.poll(2, TimeUnit.SECONDS) ?: continue
+                        // 一次批量写出, 减少磁盘操作次数
+                        val sb = StringBuilder(line).append('\n')
+                        while (true) {
+                            val more = queue.poll() ?: break
+                            sb.append(more).append('\n')
+                            if (sb.length > 32 * 1024) break
+                        }
+                        append(sb.toString())
+                    } catch (_: InterruptedException) {
+                        return@Thread
+                    } catch (_: Throwable) {
+                    }
+                }
+            }, "lite-log").apply { isDaemon = true }.start()
+        }
+    }
+
+    private fun append(text: String) {
         try {
             val dir = Globals.fileDir
             val f = File(dir, "lite.log")
@@ -43,38 +74,41 @@ object Logx {
                 bak.delete()
                 f.renameTo(bak)
             }
-            f.appendText(line + "\n")
+            f.appendText(text)
         } catch (_: Throwable) {
         }
     }
 
+    /** 入队 (不阻塞调用线程, 队列满则丢弃) */
+    private fun enqueue(line: String) {
+        ensureWriter()
+        queue.offer(line)
+    }
+
     fun i(phase: String, msg: String) {
         if (!enabled) return
-        val line = "${fmt.format(Date())} [${rel()}] I/$phase: $msg"
         Log.i(TAG, "[$phase][${rel()}] $msg")
-        write(line)
+        enqueue("${fmt.format(Date())} [${rel()}] I/$phase: $msg")
     }
 
     fun w(phase: String, msg: String) {
         if (!enabled) return
-        val line = "${fmt.format(Date())} [${rel()}] W/$phase: $msg"
         Log.w(TAG, "[$phase][${rel()}] $msg")
-        write(line)
+        enqueue("${fmt.format(Date())} [${rel()}] W/$phase: $msg")
     }
 
     fun e(phase: String, msg: String, t: Throwable? = null) {
-        val line = "${fmt.format(Date())} [${rel()}] E/$phase: $msg" +
-            (t?.let { " | ${it.javaClass.simpleName}: ${it.message}" } ?: "")
         Log.e(TAG, "[$phase][${rel()}] $msg", t)
-        write(line)
+        enqueue(
+            "${fmt.format(Date())} [${rel()}] E/$phase: $msg" +
+                (t?.let { " | ${it.javaClass.simpleName}: ${it.message}" } ?: "")
+        )
     }
 
-    /** 关键节点标记 (打印堆栈上下文, 便于确认是否重复创建实例) */
     fun mark(phase: String) {
         if (!enabled) return
-        val line = "${fmt.format(Date())} [${rel()}] M/$phase"
         Log.i(TAG, "[$phase][${rel()}] ----")
-        write(line)
+        enqueue("${fmt.format(Date())} [${rel()}] M/$phase")
     }
 
     fun clear() {

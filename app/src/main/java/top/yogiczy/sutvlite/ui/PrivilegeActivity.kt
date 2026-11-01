@@ -1,4 +1,4 @@
-package top.yogiczy.sutvlite.ui
+﻿package top.yogiczy.sutvlite.ui
 
 import android.app.Activity
 import android.app.AlertDialog
@@ -109,33 +109,44 @@ class PrivilegeActivity : Activity() {
 
         page.addView(sectionTitle("系统权限"))
 
-        page.addView(toggleRow("安装为系统应用", { if (cachedSystem) "开" else "关" }) {
-            val on = !cachedSystem
-            val r = if (on) RootActions.installAsSystemApp() else RootActions.removeFromSystem()
-            cachedSystem = on
-            if (on) "开 · $r" else "关 · $r"
-        })
+        page.addView(toggleRow("安装为系统应用", { if (cachedSystem) "开" else "关" }, { on, cb ->
+            cb("处理中…")
+            CoroutineScope(Dispatchers.IO).launch {
+                val r = if (on) RootActions.installAsSystemApp() else RootActions.removeFromSystem()
+                withContext(Dispatchers.Main) {
+                    cachedSystem = on
+                    cb((if (on) "开 · " else "关 · ") + r)
+                }
+            }
+        }))
 
-        page.addView(toggleRow("锁定为桌面", { if (cachedLauncher) "开" else "关" }) {
-            val on = !cachedLauncher
-            val r = if (on) RootActions.setAsDefaultLauncher() else RootActions.restoreDefaultLauncher()
-            cachedLauncher = on
-            if (on) "开 · $r" else "关 · $r"
-        })
+        page.addView(toggleRow("锁定为桌面", { if (cachedLauncher) "开" else "关" }, { on, cb ->
+            cb("处理中…")
+            CoroutineScope(Dispatchers.IO).launch {
+                val r = if (on) RootActions.setAsDefaultLauncher() else RootActions.restoreDefaultLauncher()
+                withContext(Dispatchers.Main) {
+                    cachedLauncher = on
+                    cb((if (on) "开 · " else "关 · ") + r)
+                }
+            }
+        }))
 
-        page.addView(toggleRow("进程守护", { if (cachedOom) "开" else "关" }) {
-            val on = !cachedOom
-            val r = RootActions.setOomPriority(on)
-            cachedOom = on
-            if (on) "开 · $r" else "关 · $r"
-        })
+        page.addView(toggleRow("进程守护", { if (cachedOom) "开" else "关" }, { on, cb ->
+            cb("处理中…")
+            CoroutineScope(Dispatchers.IO).launch {
+                val r = RootActions.setOomPriority(on)
+                withContext(Dispatchers.Main) {
+                    cachedOom = on
+                    cb((if (on) "开 · " else "关 · ") + r)
+                }
+            }
+        }))
 
         page.addView(sectionTitle("启动"))
-        page.addView(toggleRow("开机自启", { if (SP.getBoolean("boot_launch", false)) "开" else "关" }) {
-            val on = !SP.getBoolean("boot_launch", false)
+        page.addView(toggleRow("开机自启", { if (SP.getBoolean("boot_launch", false)) "开" else "关" }, { on, cb ->
             SP.putBoolean("boot_launch", on)
-            if (on) "开" else "关"
-        })
+            cb(if (on) "开" else "关")
+        }))
     }
 
     private fun requestRoot() {
@@ -191,7 +202,12 @@ class PrivilegeActivity : Activity() {
         setPadding(0, dp(16), 0, dp(6))
     }
 
-    private fun toggleRow(title: String, value: () -> String, onToggle: () -> String): LinearLayout {
+    /** 开关行: action 收到目标状态 + 结果回调 (结果回调在 IO 完成后由主线程执行) */
+    private fun toggleRow(
+        title: String,
+        value: () -> String,
+        action: (Boolean, (String) -> Unit) -> Unit,
+    ): LinearLayout {
         val c = container()
         val t = TextView(this).apply { text = title; textSize = 15f; setTextColor(C_WHITE) }
         c.addView(t, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
@@ -208,7 +224,12 @@ class PrivilegeActivity : Activity() {
             else -> ""
         })
         bindFocus(c, t, v, null)
-        c.setOnClickListener { v.text = onToggle() }
+        c.setOnClickListener {
+            val target = !(value() == "开" || value().startsWith("开"))
+            action(target) { text ->
+                if (!isFinishing && !isDestroyed) v.text = text
+            }
+        }
         return c
     }
 

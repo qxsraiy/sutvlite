@@ -185,26 +185,14 @@ object RootActions {
         Thread.sleep(300)
         if (isResolvedHome()) return "已设为默认桌面 ✅"
 
-        val pm = ctx().packageManager
-        val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
-        val others = pm.queryIntentActivities(intent, 0)
-            .map { it.activityInfo.packageName }
-            .filter { it != ourPkg() }
-            .distinct()
-        val disabledNow = mutableListOf<String>()
-        for (pkg in others) {
-            val s1 = su("pm disable $pkg", 12000)
-            val s2 = if (s1?.success != true) su("pm disable-user $pkg", 12000) else s1
-            val s3 = if (s2?.success != true) su("pm disable-user --user 0 $pkg", 12000) else s2
-            if (s3?.success == true) disabledNow.add(pkg)
-        }
-        if (disabledNow.isNotEmpty()) SP.putString(SP_DISABLED_LAUNCHERS, disabledNow.joinToString(","))
-
-        Thread.sleep(600)
-        return when {
-            isResolvedHome() -> "已设为默认桌面 ✅（已禁用其它桌面: ${disabledNow.joinToString()}）"
-            disabledNow.isNotEmpty() -> "已启用桌面入口并禁用其它桌面(${disabledNow.joinToString()})，按 HOME 键确认"
-            else -> "已启用桌面入口，按 HOME 键选择本应用为桌面"
+        // 不再禁用其它桌面!
+        // 老盒子的厂商守护脚本会不断尝试重启被禁用的桌面, 每次失败都拉起一整个 Java VM,
+        // 单核 1GB 盒子直接被拖到卡死。这里只启用自己 + 尝试设为默认, 其余交给系统选择。
+        Thread.sleep(300)
+        return if (isResolvedHome()) {
+            "已设为默认桌面 ✅"
+        } else {
+            "已启用桌面入口, 请按 HOME 键并选择「极简直播」作为桌面"
         }
     }
 
