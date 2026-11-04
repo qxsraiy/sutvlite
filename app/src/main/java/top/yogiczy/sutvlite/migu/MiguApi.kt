@@ -378,21 +378,46 @@ data class MiguCategory(
     val fitArea: List<String> = emptyList(),
     val dataList: MutableList<MiguChannel> = mutableListOf()
 ) {
+    /** 序列化 (频道列表本地缓存用) */
+    fun toJson(): JSONObject = JSONObject().apply {
+        put("name", name)
+        put("vomsID", vomsID)
+        put("fitArea", org.json.JSONArray(fitArea))
+        put("channels", org.json.JSONArray().apply {
+            dataList.forEach { put(it.toJson()) }
+        })
+    }
+
     companion object {
         fun fromJson(json: JSONObject): MiguCategory {
             val fitArea = mutableListOf<String>()
-            val fitAreaJson = json.optJSONArray("fitArea")
-            if (fitAreaJson != null) {
-                for (i in 0 until fitAreaJson.length()) {
-                    fitArea.add(fitAreaJson.getString(i))
-                }
+            json.optJSONArray("fitArea")?.let { arr ->
+                for (i in 0 until arr.length()) fitArea.add(arr.getString(i))
             }
-            
             return MiguCategory(
                 name = json.optString("name", ""),
                 vomsID = json.optString("vomsID", ""),
                 fitArea = fitArea
             )
+        }
+
+        /** 从本地缓存反序列化 */
+        fun fromCacheJson(json: JSONObject): MiguCategory {
+            val fitArea = mutableListOf<String>()
+            json.optJSONArray("fitArea")?.let { arr ->
+                for (i in 0 until arr.length()) fitArea.add(arr.getString(i))
+            }
+            val cat = MiguCategory(
+                name = json.optString("name", ""),
+                vomsID = json.optString("vomsID", ""),
+                fitArea = fitArea,
+            )
+            json.optJSONArray("channels")?.let { arr ->
+                for (i in 0 until arr.length()) {
+                    arr.optJSONObject(i)?.let { cat.dataList.add(MiguChannel.fromCacheJson(it)) }
+                }
+            }
+            return cat
         }
     }
 }
@@ -420,6 +445,20 @@ data class MiguChannel(
                 logo = logo
             )
         }
+
+        fun fromCacheJson(json: JSONObject): MiguChannel = MiguChannel(
+            name = json.optString("name", ""),
+            pid = json.optString("pid", ""),
+            logo = json.optString("logo", ""),
+            groupName = json.optString("groupName", ""),
+        )
+    }
+
+    fun toJson(): JSONObject = JSONObject().apply {
+        put("name", name)
+        put("pid", pid)
+        put("logo", logo)
+        put("groupName", groupName)
     }
 }
 

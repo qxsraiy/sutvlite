@@ -1,4 +1,4 @@
-package top.yogiczy.sutvlite.ui
+﻿package top.yogiczy.sutvlite.ui
 
 import top.yogiczy.sutvlite.Logx
 
@@ -70,6 +70,13 @@ open class LiveActivity : Activity() {
     private var bannerName: TextView? = null
     private var hintTv: TextView? = null
     private var loadingTv: TextView? = null
+    private var loadingSpinner: android.widget.ProgressBar? = null
+    private var loadingBoxView: LinearLayout? = null
+    private var bannerBar: android.widget.ProgressBar? = null
+    /** 加载计时器: 每 500ms 更新"已用 N 秒", 让等待有变化 */
+    private var loadingTickJob: Job? = null
+    private var loadingStartAt = 0L
+    private var loadingBaseText = ""
 
     private var overlay: FrameLayout? = null
     private var groupCol: LinearLayout? = null
@@ -163,19 +170,29 @@ open class LiveActivity : Activity() {
         root.addView(pv, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
 
-        // 加载/等待提示 (居中)
+        // 加载提示: 转圈 + 文字 + 已用时 (让等待有变化, 不像是卡死)
         loadingTv = TextView(this).apply {
-            textSize = 17f
-            setTextColor(C_BLUE_LIGHT)
+            textSize = 18f
+            setTextColor(C_WHITE)
             gravity = Gravity.CENTER
-            setPadding(dp(26), dp(14), dp(26), dp(14))
-            background = GradientDrawable().apply {
-                cornerRadius = dp(12).toFloat()
-                setColor(0xCC0B1220.toInt())
-                setStroke(dp(1), C_BLUE)
-            }
         }
-        root.addView(loadingTv, FrameLayout.LayoutParams(
+        loadingSpinner = android.widget.ProgressBar(this).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(26), dp(26)).apply { setMargins(0, 0, dp(14), 0) }
+        }
+        val loadingBox = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            setPadding(dp(26), dp(16), dp(26), dp(16))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(14).toFloat()
+                setColor(0xE60E1A2E.toInt())
+                setStroke(dp(2), C_BLUE)
+            }
+            addView(loadingSpinner)
+            addView(loadingTv)
+        }
+        loadingBoxView = loadingBox
+        root.addView(loadingBox, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
             gravity = Gravity.CENTER
         })
@@ -197,6 +214,11 @@ open class LiveActivity : Activity() {
             setTypeface(null, android.graphics.Typeface.BOLD)
         }
         bannerCard!!.addView(bannerName)
+        bannerBar = android.widget.ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            isIndeterminate = true
+            layoutParams = LinearLayout.LayoutParams(dp(240), dp(4)).apply { setMargins(0, dp(10), 0, 0) }
+        }
+        bannerCard!!.addView(bannerBar)
         root.addView(bannerCard, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
             gravity = Gravity.BOTTOM or Gravity.START
@@ -294,11 +316,30 @@ open class LiveActivity : Activity() {
 
     // ==================== 加载 + 播放 ====================
 
+    /** 缓存优先启动: 有缓存就立刻开播, 网络刷新放后台 */
     private fun loadAndPlay() {
         if (starting) return
         starting = true
         showLoading("启动中…")
         scope.launch {
+            val manager = MiguBackendManager.getInstance(this@LiveActivity)
+
+            // ---------- 0) 缓存优先 ----------
+            val cached = withContext(Dispatchers.IO) { manager.loadCache() }
+            if (cached.isNotEmpty()) {
+                val filtered = Prefs.filter(cached)
+                if (filtered.isNotEmpty()) {
+                    rawCategories = cached
+                    categories = filtered
+                    applyLastChannel()
+                    starting = false
+                    Logx.i("启动", "缓存启动: ${filtered.size} 组 ${filtered.sumOf { it.dataList.size }} 台")
+                    switchChannel()
+                    refreshInBackground()
+                    return@launch
+                }
+            }
+            Logx.i("启动", "无频道缓存, 走网络加载")
             // 等网络就绪: 显示具体原因, 每 5 秒复查一次 (有网立刻继续)
             var waited = 0
             while (!isNetworkReady() || !hasDefaultRoute()) {
@@ -321,7 +362,7 @@ open class LiveActivity : Activity() {
                 showLoading(if (attempt == 1) "加载频道…" else "加载频道…($attempt)")
                 categories = withContext(Dispatchers.IO) {
                     runCatching {
-                        val all = MiguBackendManager.getInstance(this@LiveActivity).loadAllChannels()
+                        val all = MiguBackendManager.getInstance(this@LiveActivity).loadAllChannelsAndCache()
                         rawCategories = all
                         Prefs.filter(all)
                     }.getOrElse { emptyList() }
@@ -339,20 +380,64 @@ open class LiveActivity : Activity() {
                 return@launch
             }
 
-            // 上次频道 or 第一个
-            val lastPid = SP.getString("last_pid", "")
-            var g = 0
-            var c = 0
-            var found = false
-            outer@ for ((gi, cat) in categories.withIndex()) {
-                for ((ci, ch) in cat.dataList.withIndex()) {
-                    if (ch.pid == lastPid) { g = gi; c = ci; found = true; break@outer }
-                }
-            }
-            currentGroupIdx = g
-            currentChannelList = categories[g].dataList
-            currentChannelIdx = if (found) c else 0
+            applyLastChannel()
             switchChannel()
+        }
+    }
+
+    /** 选中上次播放的频道 (找不到就第一组第一台) */
+    private fun applyLastChannel() {
+        if (categories.isEmpty()) return
+        val lastPid = SP.getString("last_pid", "")
+        var g = 0
+        var c = 0
+        var found = false
+        outer@ for ((gi, cat) in categories.withIndex()) {
+            for ((ci, ch) in cat.dataList.withIndex()) {
+                if (ch.pid == lastPid) { g = gi; c = ci; found = true; break@outer }
+            }
+        }
+        currentGroupIdx = g.coerceIn(0, categories.size - 1)
+        currentChannelList = categories[currentGroupIdx].dataList
+        currentChannelIdx = if (found) c else 0
+    }
+
+    /** 后台刷新频道列表 (不打断当前播放) */
+    private fun refreshInBackground() {
+        scope.launch(Dispatchers.IO) {
+            repeat(3) {
+                val t0 = android.os.SystemClock.elapsedRealtime()
+                val fresh = runCatching {
+                    MiguBackendManager.getInstance(this@LiveActivity).loadAllChannelsAndCache()
+                }.getOrNull()
+                if (!fresh.isNullOrEmpty() && fresh.any { c -> c.dataList.isNotEmpty() }) {
+                    Logx.i("刷新", "后台刷新成功 ${fresh.size} 组, 耗时 ${android.os.SystemClock.elapsedRealtime() - t0}ms")
+                    withContext(Dispatchers.Main) {
+                        if (!alive()) return@withContext
+                        rawCategories = fresh
+                        val filtered = Prefs.filter(fresh)
+                        if (filtered.isEmpty()) return@withContext
+                        val curPid = currentChannelList.getOrNull(currentChannelIdx)?.pid
+                        categories = filtered
+                        if (!overlayVisible) {
+                            // 当前台仍在 -> 只更新下标; 不在 -> 不动播放, 面板里会重建
+                            var gi = -1; var ci = 0
+                            outer@ for ((g, cat) in filtered.withIndex()) {
+                                for ((c, ch) in cat.dataList.withIndex()) {
+                                    if (ch.pid == curPid) { gi = g; ci = c; break@outer }
+                                }
+                            }
+                            if (gi >= 0) {
+                                currentGroupIdx = gi
+                                currentChannelList = filtered[gi].dataList
+                                currentChannelIdx = ci
+                            }
+                        }
+                    }
+                    return@launch
+                }
+                kotlinx.coroutines.delay(3000)
+            }
         }
     }
 
@@ -504,13 +589,31 @@ open class LiveActivity : Activity() {
 
     private fun showLoading(text: String) {
         if (!alive()) return
+        loadingBoxView?.visibility = View.VISIBLE
+        // 每个阶段重新计时 (换台/加载/预热各自计时更直观)
+        loadingStartAt = android.os.SystemClock.elapsedRealtime()
+        startLoadingTick()
+        loadingBaseText = text
         loadingTv?.text = text
-        loadingTv?.visibility = View.VISIBLE
+    }
+
+    /** 每 500ms 刷新"已用 N 秒", 让加载过程有变化感 */
+    private fun startLoadingTick() {
+        loadingTickJob?.cancel()
+        loadingTickJob = scope.launch {
+            while (alive()) {
+                val sec = (android.os.SystemClock.elapsedRealtime() - loadingStartAt) / 1000
+                loadingTv?.text = "$loadingBaseText  ${sec}s"
+                delay(500)
+            }
+        }
     }
 
     private fun hideLoading() {
         if (!alive()) return
-        loadingTv?.visibility = View.GONE
+        loadingTickJob?.cancel()
+        loadingStartAt = 0L
+        loadingBoxView?.visibility = View.GONE
     }
 
     /** 底部提示: 独立计时, 5 秒后必定隐藏 (不受换台横幅影响) */

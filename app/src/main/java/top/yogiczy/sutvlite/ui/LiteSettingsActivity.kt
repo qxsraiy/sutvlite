@@ -36,7 +36,10 @@ class LiteSettingsActivity : Activity() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(C_BG)
-            setPadding(dp(48), dp(28), dp(48), dp(28))
+            // 卡片焦点放大 1.05 会向外扩, 左右留足边距并允许溢出绘制, 否则会被裁掉
+            clipChildren = false
+            clipToPadding = false
+            setPadding(dp(72), dp(28), dp(72), dp(28))
         }
 
         root.addView(TextView(this).apply {
@@ -49,6 +52,8 @@ class LiteSettingsActivity : Activity() {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
+            clipChildren = false
+            clipToPadding = false
         }
         root.addView(row, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
@@ -63,7 +68,7 @@ class LiteSettingsActivity : Activity() {
         )
         cards.forEachIndexed { i, card ->
             row.addView(card, LinearLayout.LayoutParams(0, dp(280), 1f).apply {
-                if (i == 0) setMargins(0, 0, dp(28), 0)
+                if (i == 0) setMargins(0, 0, dp(56), 0)
             })
         }
         cards.forEachIndexed { i, c ->
@@ -117,8 +122,8 @@ class LiteSettingsActivity : Activity() {
             }
             t.setTextColor(C_WHITE)
             h.setTextColor(if (f) C_WHITE else C_BLUE_LIGHT)
-            card.scaleX = if (f) 1.05f else 1f
-            card.scaleY = if (f) 1.05f else 1f
+            card.scaleX = if (f) 1.04f else 1f
+            card.scaleY = if (f) 1.04f else 1f
         }
         paint(false)
         card.setOnFocusChangeListener { _, f -> paint(f) }
