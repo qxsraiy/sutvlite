@@ -48,6 +48,12 @@ class LiteApp : Application() {
         // 后台预热: 冷启动时 TLS/DNS/校时最慢, 提前热起来,
         // 用户点进直播时就是热路径, 避免"第一次打开一直加载中"
         top.yogiczy.sutvlite.Logx.mark("Application.onCreate 完成")
+        // 冷启动诊断: 开机多久、墙钟是什么 (盒子无 RTC 时墙钟可能还是 1970/2016)
+        top.yogiczy.sutvlite.Logx.i(
+            "启动",
+            "uptime=${android.os.SystemClock.elapsedRealtime() / 1000}s " +
+                "墙钟=${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US).format(java.util.Date())}"
+        )
 
         CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
             runCatching {

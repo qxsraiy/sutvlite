@@ -361,23 +361,27 @@ open class LiveActivity : Activity() {
                 }
             }
             Logx.i("启动", "无频道缓存, 走网络加载")
-            // 等网络就绪: 显示具体原因, 每 5 秒复查一次 (有网立刻继续)
+            // 等网络真正可用: 链路 up ≠ 能上网, 开机后往往还要几十秒
             var waited = 0
-            while (!isNetworkReady() || !hasDefaultRoute()) {
-                showLoading(networkProblemText())
+            while (true) {
+                val linkOk = isNetworkReady() && hasDefaultRoute()
+                if (linkOk && probeInternet()) break
+                showLoading(
+                    if (!linkOk) networkProblemText() else "网络连接中，等待网关就绪…"
+                )
                 delay(2000)
                 waited += 2000
-                // 超过 2 分钟仍无网络: 保持提示但放慢复查节奏, 不阻塞界面
-                if (waited > 120_000 && waited % 30_000 == 0) {
-                    Logx.w("网络", "长时间无网络: ${networkProblemText()}")
+                if (waited % 30_000 == 0) {
+                    Logx.w("网络", "等待联网 ${waited / 1000}s: 链路=$linkOk 探测=${runCatching { probeInternet() }.getOrDefault(false)}")
                 }
             }
+            Logx.i("网络", "联网就绪, 等待 ${waited}ms")
             showLoading("网络已连接，加载中…")
             ensureLocalServer()
 
             Logx.i("启动", "开始加载频道列表")
             var attempt = 0
-            while (attempt < 5) {
+            while (attempt < 24) {
                 val t0 = android.os.SystemClock.elapsedRealtime()
                 attempt++
                 showLoading(if (attempt == 1) "加载频道…" else "加载频道…($attempt)")
@@ -393,7 +397,12 @@ open class LiveActivity : Activity() {
                     "频道加载 第${attempt}次: ${categories.size} 组, 耗时 ${android.os.SystemClock.elapsedRealtime() - t0}ms"
                 )
                 if (categories.isNotEmpty()) break
-                delay(3000)
+                // 失败: 先确认还能上网, 再退避重试
+                delay(5000)
+                if (!probeInternet()) {
+                    showLoading("网络中断，重新等待…")
+                    kotlinx.coroutines.delay(3000)
+                }
             }
             starting = false
             if (categories.isEmpty()) {
@@ -512,14 +521,18 @@ open class LiveActivity : Activity() {
                     hideLoading()
                     failStreak++
                     Logx.e("播放", "失败(${failStreak}): $msg")
-                    if (failStreak >= 3) {
-                        // 停止重试, 保持界面可响应 (切换/返回都正常), 避免无限重试拖死盒子
-                        autoSwitchJob?.cancel()
-                        restartJob?.cancel()
-                        showHint("播放失败，请按 OK 换台")
-                        Logx.w("播放", "连续失败 $failStreak 次, 停止自动重试")
-                    } else {
-                        showHint("播放失败: $msg")
+                    // 退避重试: 10s -> 20s -> 30s 封顶, 永不放弃 (开机后网络慢也能自愈)
+                    autoSwitchJob?.cancel()
+                    restartJob?.cancel()
+                    autoSwitchJob = scope.launch {
+                        val waitMs = minOf(10_000L * failStreak, 30_000L)
+                        showHint("播放失败，${waitMs / 1000} 秒后自动重试")
+                        delay(waitMs)
+                        if (alive() && !playedFirstFrame) {
+                            Logx.i("播放", "退避重试 #${failStreak}")
+                            failStreak = 0
+                            switchChannel()
+                        }
                     }
                 }
             }
@@ -560,6 +573,17 @@ open class LiveActivity : Activity() {
                 top.yogiczy.sutvlite.backend.LiteServer.awaitReady(10_000)
             }
             if (player == null || !alive()) return@launch
+            // 缓存优先时可能网络还没通: 先确认能上网, 否则等 (不再直接失败)
+            if (!probeInternet()) {
+                showLoading("等待网络就绪…")
+                var w = 0
+                while (alive() && !probeInternet()) {
+                    delay(2000); w += 2000
+                    if (w % 30_000 == 0) Logx.w("网络", "换台等待联网 ${w / 1000}s")
+                }
+                if (!alive()) return@launch
+                Logx.i("网络", "换台前联网就绪, 等待 ${w}ms")
+            }
             if (!useProxy) {
                 val direct = withContext(Dispatchers.IO) { resolveDirect(ch.pid) }
                 if (direct != null) {
@@ -1023,6 +1047,32 @@ open class LiveActivity : Activity() {
         !isNetworkReady() -> "网线未连接，请检查网线/路由器"
         !hasDefaultRoute() -> "网络未就绪（未获取到 IP）"
         else -> "网络已连接"
+    }
+
+    private var lastProbeOkAt = 0L
+
+    /** 真实连通性探针: 链路 up 不代表能上网 (开机后 DHCP/PPPoE/网关可能还没通) */
+    private fun probeInternet(): Boolean {
+        // 10 秒内探测成功过就直接复用, 避免每次换台都加一次 TCP 握手
+        if (System.currentTimeMillis() - lastProbeOkAt < 10_000) return true
+        val ok = probeInternetNow()
+        if (ok) lastProbeOkAt = System.currentTimeMillis()
+        return ok
+    }
+
+    private fun probeInternetNow(): Boolean = try {
+        val ips = runCatching { top.yogiczy.sutvlite.backend.PublicDns.lookup("play.miguvideo.com") }
+            .getOrNull()
+        if (ips.isNullOrEmpty()) {
+            false
+        } else {
+            java.net.Socket().use { s ->
+                s.connect(java.net.InetSocketAddress(ips.first(), 443), 4000)
+            }
+            true
+        }
+    } catch (_: Throwable) {
+        false
     }
 
     private fun isNetworkReady(): Boolean = try {
