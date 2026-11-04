@@ -72,7 +72,8 @@ open class LiveActivity : Activity() {
     private var loadingTv: TextView? = null
     private var loadingSpinner: android.widget.ProgressBar? = null
     private var loadingBoxView: LinearLayout? = null
-    private var bannerBar: android.widget.ProgressBar? = null
+    private var bannerSpinner: android.widget.ProgressBar? = null
+    private var bannerStatus: TextView? = null
     /** 加载计时器: 每 500ms 更新"已用 N 秒", 让等待有变化 */
     private var loadingTickJob: Job? = null
     private var loadingStartAt = 0L
@@ -122,6 +123,8 @@ open class LiveActivity : Activity() {
     }
 
     companion object {
+        /** 频道缓存有效期: 6 小时 */
+        private const val CACHE_TTL_MS = 6 * 60 * 60 * 1000L
         /** 当前存活的 LiveActivity 实例数 (>1 说明有双播放器风险) */
         @Volatile
         var instanceCount = 0
@@ -213,12 +216,26 @@ open class LiveActivity : Activity() {
             setTextColor(C_WHITE)
             setTypeface(null, android.graphics.Typeface.BOLD)
         }
-        bannerCard!!.addView(bannerName)
-        bannerBar = android.widget.ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
-            isIndeterminate = true
-            layoutParams = LinearLayout.LayoutParams(dp(240), dp(4)).apply { setMargins(0, dp(10), 0, 0) }
+        bannerStatus = TextView(this).apply {
+            textSize = 14f
+            setTextColor(C_BLUE_LIGHT)
+            setPadding(0, dp(6), 0, 0)
         }
-        bannerCard!!.addView(bannerBar)
+        // 换台时旋转的圈圈
+        bannerSpinner = android.widget.ProgressBar(this).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(30), dp(30)).apply { setMargins(0, 0, dp(14), 0) }
+        }
+        val bannerRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(bannerSpinner)
+            addView(LinearLayout(this@LiveActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(bannerName)
+                addView(bannerStatus)
+            })
+        }
+        bannerCard!!.addView(bannerRow)
         root.addView(bannerCard, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
             gravity = Gravity.BOTTOM or Gravity.START
@@ -333,9 +350,13 @@ open class LiveActivity : Activity() {
                     categories = filtered
                     applyLastChannel()
                     starting = false
-                    Logx.i("启动", "缓存启动: ${filtered.size} 组 ${filtered.sumOf { it.dataList.size }} 台")
+                    Logx.i(
+                        "启动",
+                        "缓存启动: ${filtered.size} 组 ${filtered.sumOf { it.dataList.size }} 台, " +
+                            "缓存年龄 ${manager.cacheAgeMs() / 1000}s"
+                    )
                     switchChannel()
-                    refreshInBackground()
+                    maybeRefreshCache(manager)
                     return@launch
                 }
             }
@@ -385,6 +406,21 @@ open class LiveActivity : Activity() {
         }
     }
 
+    private var prefetchedNextPid: String? = null
+
+    /** 首帧后预取"下一台": 让下一次换台命中缓存, 接近无缝 */
+    private fun prefetchNeighbor() {
+        val next = currentChannelList.getOrNull(currentChannelIdx + 1) ?: return
+        if (next.pid == prefetchedNextPid) return
+        prefetchedNextPid = next.pid
+        scope.launch(Dispatchers.IO) {
+            runCatching {
+                prefetchManifest("http://127.0.0.1:10481/migufb/${next.pid}")
+            }
+            Logx.i("预取", "下一台已预热: ${next.name}")
+        }
+    }
+
     /** 选中上次播放的频道 (找不到就第一组第一台) */
     private fun applyLastChannel() {
         if (categories.isEmpty()) return
@@ -402,6 +438,24 @@ open class LiveActivity : Activity() {
         currentChannelIdx = if (found) c else 0
     }
 
+    /**
+     * 缓存自动刷新策略:
+     *  - 缓存超过 6 小时
+     *  - 跨天 (上次刷新不是今天)
+     *  - 网络刚恢复
+     */
+    private fun maybeRefreshCache(manager: MiguBackendManager, force: Boolean = false) {
+        val today = System.currentTimeMillis() / 86_400_000L
+        val lastDay = SP.getLong("last_cache_day", 0L)
+        val stale = manager.isCacheStale(CACHE_TTL_MS)
+        val needRefresh = force || stale || lastDay != today
+        Logx.i(
+            "刷新",
+            "缓存策略: stale=$stale(>${CACHE_TTL_MS / 3600_000}h) 跨天=${lastDay != today} force=$force -> ${if (needRefresh) "刷新" else "跳过"}"
+        )
+        if (needRefresh) refreshInBackground()
+    }
+
     /** 后台刷新频道列表 (不打断当前播放) */
     private fun refreshInBackground() {
         scope.launch(Dispatchers.IO) {
@@ -412,6 +466,7 @@ open class LiveActivity : Activity() {
                 }.getOrNull()
                 if (!fresh.isNullOrEmpty() && fresh.any { c -> c.dataList.isNotEmpty() }) {
                     Logx.i("刷新", "后台刷新成功 ${fresh.size} 组, 耗时 ${android.os.SystemClock.elapsedRealtime() - t0}ms")
+                    SP.putLong("last_cache_day", System.currentTimeMillis() / 86_400_000L)
                     withContext(Dispatchers.Main) {
                         if (!alive()) return@withContext
                         rawCategories = fresh
@@ -474,7 +529,13 @@ open class LiveActivity : Activity() {
             failStreak = 0
             autoSwitchJob?.cancel()
             restartJob?.cancel()
-            runOnUiThread { if (alive()) hideLoading() }
+            runOnUiThread {
+                if (alive()) {
+                    hideLoading()
+                    onBannerReady()
+                }
+            }
+            prefetchNeighbor()
         }
 
         // 10 秒还没出画面 -> 硬重启一次 (停掉卡死的加载, 重新拉流)
@@ -542,15 +603,26 @@ open class LiveActivity : Activity() {
     }
 
     /** 8 秒无首帧 → 代理/直连互换 */
+    /** 30 秒无首帧 → 代理/直连互换 (带提示, 避免"一直转圈"没有反馈) */
     private fun armAutoSwitch() {
         autoSwitchJob?.cancel()
         autoSwitchJob = scope.launch {
-            delay(8000)
+            delay(30_000)
             if (!playedFirstFrame) {
                 useProxy = !useProxy
+                Logx.w("换台", "30 秒无画面, 切换${if (useProxy) "代理" else "直连"}")
+                showLoading(if (useProxy) "切换为本地代理…" else "切换为直连…")
                 switchChannel()
             }
         }
+    }
+
+    /** 换台/切换过程中的状态提示 (显示在横幅下方) */
+    private fun showSwitchStatus(text: String) {
+        if (!alive()) return
+        bannerStatus?.text = text
+        bannerCard?.visibility = View.VISIBLE
+        bannerSpinner?.visibility = View.VISIBLE
     }
 
     private fun resolveDirect(pid: String): String? = try {
@@ -628,14 +700,25 @@ open class LiveActivity : Activity() {
         }
     }
 
-    /** 换台横幅: 只有频道名, 3.5 秒隐去 */
+    /** 换台横幅: 频道名 + 旋转圈圈 + 状态; 出画面后 2 秒隐去 */
     private fun showBanner(name: String) {
+        if (!alive()) return
         bannerName?.text = name
+        bannerStatus?.text = "连接中…"
+        bannerSpinner?.visibility = View.VISIBLE
         bannerCard?.visibility = View.VISIBLE
         bannerHideJob?.cancel()
+    }
+
+    /** 首帧到达: 停转圈, 显示就绪后 2 秒隐去 */
+    private fun onBannerReady() {
+        if (!alive()) return
+        bannerSpinner?.visibility = View.GONE
+        bannerStatus?.text = ""
+        bannerHideJob?.cancel()
         bannerHideJob = scope.launch {
-            delay(3500)
-            bannerCard?.visibility = View.GONE
+            delay(2000)
+            if (alive()) bannerCard?.visibility = View.GONE
         }
     }
 
@@ -975,6 +1058,11 @@ open class LiveActivity : Activity() {
             if (categories.isEmpty()) {
                 starting = false
                 loadAndPlay()
+            } else {
+                // 网络恢复: 顺手检查缓存是否该刷新
+                runCatching {
+                    maybeRefreshCache(MiguBackendManager.getInstance(this@LiveActivity), force = true)
+                }
             }
         }
     }

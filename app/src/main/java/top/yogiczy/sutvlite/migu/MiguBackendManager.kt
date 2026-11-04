@@ -1,4 +1,4 @@
-package top.yogiczy.sutvlite.migu
+﻿package top.yogiczy.sutvlite.migu
 
 import android.content.Context
 import org.json.JSONArray
@@ -106,6 +106,14 @@ class MiguBackendManager(private val context: Context) {
     }
 
     fun hasCache(): Boolean = channelCacheFile.exists() && channelCacheFile.length() > 1024
+
+    /** 缓存年龄(毫秒); 无缓存返回 Long.MAX_VALUE */
+    fun cacheAgeMs(): Long =
+        if (channelCacheFile.exists()) System.currentTimeMillis() - channelCacheFile.lastModified()
+        else Long.MAX_VALUE
+
+    /** 缓存是否过期 */
+    fun isCacheStale(maxAgeMs: Long): Boolean = cacheAgeMs() > maxAgeMs
 
     fun clearCache() {
         runCatching { channelCacheFile.delete() }
