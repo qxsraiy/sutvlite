@@ -22,9 +22,9 @@ import top.yogiczy.sutvlite.root.RootManager
  */
 class PrivilegeActivity : Activity() {
 
-    private val C_BG = 0xFF0B1220.toInt()
+    private val C_BG = 0xFF0E1116.toInt()
     private val C_BLUE = 0xFF2F7BFF.toInt()
-    private val C_BLUE_LIGHT = 0xFFA8C7FA.toInt()
+    private val C_BLUE_LIGHT = 0xFF9AA7BD.toInt()
     private val C_WHITE = 0xFFFFFFFF.toInt()
 
     private val scope = CoroutineScope(Dispatchers.Main)
@@ -43,7 +43,7 @@ class PrivilegeActivity : Activity() {
         page = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(C_BG)
-            setPadding(dp(48), dp(24), dp(48), dp(24))
+            setPadding(dp(84), dp(36), dp(84), dp(32))
         }
         page.addView(TextView(this).apply {
             text = "特权功能"
@@ -71,19 +71,19 @@ class PrivilegeActivity : Activity() {
 
         rootTv = TextView(this).apply {
             text = "Root: 检测中…"
-            textSize = 15f
+            textSize = 17f
             setTextColor(C_BLUE_LIGHT)
             isFocusable = true
             isClickable = true
             setPadding(dp(16), dp(12), dp(16), dp(12))
             background = GradientDrawable().apply {
-                cornerRadius = dp(10).toFloat()
-                setColor(0x14FFFFFF)
+                cornerRadius = dp(12).toFloat()
+                setColor(0xFF161A21.toInt())
             }
             setOnFocusChangeListener { v, f ->
                 v.background = GradientDrawable().apply {
-                    cornerRadius = dp(10).toFloat()
-                    setColor(if (f) C_BLUE else 0x14FFFFFF)
+                    cornerRadius = dp(12).toFloat()
+                    setColor(if (f) C_BLUE else 0xFF161A21.toInt())
                     setStroke(dp(2), if (f) C_WHITE else 0x00000000)
                 }
             }
@@ -91,7 +91,7 @@ class PrivilegeActivity : Activity() {
         }
         page.addView(rootTv, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-            setMargins(0, 0, 0, dp(6))
+            setMargins(0, 0, 0, dp(10))
         })
 
         page.addView(navRow("Root 诊断", "su 路径 / id / 挂载 / 系统副本 / 默认桌面") {
@@ -196,11 +196,11 @@ class PrivilegeActivity : Activity() {
         action: (Boolean, (String) -> Unit) -> Unit,
     ): LinearLayout {
         val c = container()
-        val t = TextView(this).apply { text = title; textSize = 15f; setTextColor(C_WHITE) }
+        val t = TextView(this).apply { text = title; textSize = 17f; setTextColor(C_WHITE) }
         c.addView(t, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         val v = TextView(this).apply {
             text = value()
-            textSize = 15f
+            textSize = 17f
             setTextColor(C_BLUE_LIGHT)
         }
         c.addView(v)
@@ -222,7 +222,7 @@ class PrivilegeActivity : Activity() {
     private fun navRow(title: String, hint: String, onClick: () -> Unit): LinearLayout {
         val c = container()
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val t = TextView(this).apply { text = title; textSize = 15f; setTextColor(C_WHITE) }
+        val t = TextView(this).apply { text = title; textSize = 17f; setTextColor(C_WHITE) }
         val h = TextView(this).apply { text = hint; textSize = 11f; setTextColor(C_BLUE_LIGHT) }
         col.addView(t)
         col.addView(h)
@@ -241,22 +241,22 @@ class PrivilegeActivity : Activity() {
         gravity = Gravity.CENTER_VERTICAL
         isFocusable = true
         isClickable = true
-        setPadding(dp(16), dp(10), dp(14), dp(10))
+        setPadding(dp(22), dp(14), dp(20), dp(14))
         background = GradientDrawable().apply {
-            cornerRadius = dp(10).toFloat()
-            setColor(0x14FFFFFF)
+            cornerRadius = dp(12).toFloat()
+            setColor(0xFF161A21.toInt())
         }
         layoutParams = LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-            setMargins(0, 0, 0, dp(6))
+            setMargins(0, 0, 0, dp(10))
         }
     }
 
     private fun bindFocus(c: LinearLayout, t: TextView, v: TextView, a: TextView?) {
         c.setOnFocusChangeListener { _, f ->
             c.background = GradientDrawable().apply {
-                cornerRadius = dp(10).toFloat()
-                setColor(if (f) C_BLUE else 0x14FFFFFF)
+                cornerRadius = dp(12).toFloat()
+                setColor(if (f) C_BLUE else 0xFF161A21.toInt())
                 setStroke(dp(2), if (f) C_WHITE else 0x00000000)
             }
             t.setTextColor(C_WHITE)

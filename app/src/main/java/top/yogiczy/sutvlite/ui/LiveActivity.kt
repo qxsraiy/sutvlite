@@ -83,6 +83,8 @@ open class LiveActivity : Activity() {
     private var bigSpinner: android.widget.ProgressBar? = null
     private var bootBox: LinearLayout? = null
     private var bootCountdown: TextView? = null
+    private var bootRing: RingProgressView? = null
+    private var bootIssues: TextView? = null
     private var bootTitle: TextView? = null
     private var bootTickJob: Job? = null
     /** 版权屏蔽蓝屏 */
@@ -299,63 +301,96 @@ open class LiveActivity : Activity() {
         bigSpinner?.visibility = View.GONE
     }
 
-    /** 开机等待遮罩: 转圈 + 倒计时 + root 提示 */
+    /** 开机等待遮罩: 不透明底 + 标题 + 预计提示 + 圆环进度 + 问题列表 */
     private fun buildBootBox(root: FrameLayout) {
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            setBackgroundColor(0xF20B1220.toInt())
+            setBackgroundColor(0xFF0E1116.toInt())   // 不透明深灰黑
             visibility = View.GONE
             isClickable = true
         }
         bootTitle = TextView(this).apply {
-            text = "设备启动后网络重置中"
-            textSize = 24f
+            text = "设备重启后网络重置等待中"
+            textSize = 26f
             setTextColor(C_WHITE)
             gravity = Gravity.CENTER
             setTypeface(null, android.graphics.Typeface.BOLD)
         }
         bootCountdown = TextView(this).apply {
-            textSize = 17f
-            setTextColor(C_BLUE_LIGHT)
+            textSize = 16f
+            setTextColor(0xFF9AA7BD.toInt())        // 灰色
             gravity = Gravity.CENTER
-            setPadding(0, dp(14), 0, 0)
+            setPadding(0, dp(12), 0, 0)
+            text = "预计 120 秒后进入播放"
         }
-        val spinner = android.widget.ProgressBar(this).apply {
-            layoutParams = LinearLayout.LayoutParams(dp(56), dp(56)).apply { gravity = Gravity.CENTER }
+        bootRing = RingProgressView(this).apply {
+            progress = 0f
         }
-        val hint = TextView(this).apply {
-            text = ""
-            textSize = 13f
-            setTextColor(0xFF8FA3C0.toInt())
+        bootIssues = TextView(this).apply {
+            textSize = 14f
+            setTextColor(0xFFE5484D.toInt())
             gravity = Gravity.CENTER
+            setPadding(dp(40), dp(18), dp(40), 0)
+            setLineSpacing(dp(3).toFloat(), 1f)
             visibility = View.GONE
         }
-        box.addView(spinner)
-        box.addView(bootTitle, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-            setMargins(0, dp(18), 0, 0)
-        })
+        box.addView(bootTitle)
         box.addView(bootCountdown)
-        box.addView(hint)
+        box.addView(bootRing, LinearLayout.LayoutParams(dp(132), dp(132)).apply {
+            setMargins(0, dp(34), 0, 0)
+        })
+        box.addView(bootIssues)
         bootBox = box
         root.addView(box, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
     }
 
     /** 显示开机等待 + 倒计时 */
+    /** 显示开机等待: 圆环按 120 秒预算推进, 文字显示预计剩余 */
     private fun showBootWait(seconds: Int) {
         if (!alive()) return
         bootBox?.visibility = View.VISIBLE
+        bootRing?.isError = false
+        bootRing?.progress = 0f
+        bootIssues?.visibility = View.GONE
+        bootCountdown?.text = "预计 ${seconds} 秒后进入播放"
         var left = seconds
         bootTickJob?.cancel()
-        bootCountdown?.text = "预计还需 ${left} 秒"
         bootTickJob = scope.launch {
             while (alive() && left > 0) {
                 delay(1000)
                 left--
-                bootCountdown?.text = "预计还需 ${left} 秒"
+                bootCountdown?.text = if (left > 0) "预计 ${left} 秒后进入播放" else "即将进入播放…"
+                bootRing?.progress = ((seconds - left).toFloat() / seconds.toFloat()).coerceIn(0.02f, 0.98f)
             }
+        }
+    }
+
+    /** 就绪: 圆环瞬间涨满然后隐去 */
+    private fun finishBootWait(issues: List<String>? = null) {
+        bootTickJob?.cancel()
+        if (issues != null && issues.isNotEmpty()) {
+            // 出了问题: 圆环变红 + 列出问题
+            bootRing?.isError = true
+            bootRing?.progress = 1f
+            bootCountdown?.text = "未能正常就绪，请检查以下问题："
+            bootIssues?.text = issues.joinToString("\n") { "• $it" }
+            bootIssues?.visibility = View.VISIBLE
+            Logx.w("启动", "开机等待异常: ${issues.joinToString(" / ")}")
+            // 留 4 秒给用户看, 然后继续尝试播放
+            scope.launch {
+                delay(4000)
+                if (alive()) bootBox?.visibility = View.GONE
+            }
+            return
+        }
+        bootRing?.isError = false
+        bootRing?.progress = 1f
+        bootCountdown?.text = "已就绪"
+        scope.launch {
+            delay(220)
+            if (alive()) bootBox?.visibility = View.GONE
         }
     }
 

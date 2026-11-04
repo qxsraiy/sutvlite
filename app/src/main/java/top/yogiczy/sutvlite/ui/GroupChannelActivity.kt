@@ -22,10 +22,10 @@ import top.yogiczy.sutvlite.migu.MiguCategory
  */
 class GroupChannelActivity : Activity() {
 
-    private val C_BG = 0xFF0B1220.toInt()
+    private val C_BG = 0xFF0E1116.toInt()
     private val C_BLUE = 0xFF2F7BFF.toInt()
-    private val C_BLUE_LIGHT = 0xFFA8C7FA.toInt()
-    private val C_BLUE_DIM = 0xFF1B2C4A.toInt()
+    private val C_BLUE_LIGHT = 0xFF9AA7BD.toInt()
+    private val C_BLUE_DIM = 0xFF161A21.toInt()
     private val C_WHITE = 0xFFFFFFFF.toInt()
 
     private val scope = CoroutineScope(Dispatchers.Main)
@@ -43,7 +43,7 @@ class GroupChannelActivity : Activity() {
         page = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(C_BG)
-            setPadding(dp(48), dp(24), dp(48), dp(24))
+            setPadding(dp(84), dp(36), dp(84), dp(32))
         }
         page.addView(TextView(this).apply {
             text = "分组和频道管理"
@@ -148,7 +148,7 @@ class GroupChannelActivity : Activity() {
         val (t, h) = texts(c, title, "")
         val v = TextView(this).apply {
             text = value()
-            textSize = 15f
+            textSize = 17f
             setTextColor(C_BLUE_LIGHT)
         }
         c.addView(v)
@@ -174,7 +174,7 @@ class GroupChannelActivity : Activity() {
     private fun addRow(container: LinearLayout, view: LinearLayout) {
         container.addView(view, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-            setMargins(0, 0, 0, dp(6))
+            setMargins(0, 0, 0, dp(10))
         })
     }
 
@@ -183,16 +183,16 @@ class GroupChannelActivity : Activity() {
         gravity = Gravity.CENTER_VERTICAL
         isFocusable = true
         isClickable = true
-        setPadding(dp(16), dp(10), dp(14), dp(10))
+        setPadding(dp(22), dp(14), dp(20), dp(14))
         background = GradientDrawable().apply {
-            cornerRadius = dp(10).toFloat()
-            setColor(0x14FFFFFF)
+            cornerRadius = dp(12).toFloat()
+            setColor(0xFF161A21.toInt())
         }
     }
 
     private fun texts(c: LinearLayout, title: String, hint: String): Pair<TextView, TextView> {
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val t = TextView(this).apply { text = title; textSize = 15f; setTextColor(C_WHITE) }
+        val t = TextView(this).apply { text = title; textSize = 17f; setTextColor(C_WHITE) }
         val h = TextView(this).apply { text = hint; textSize = 11f; setTextColor(C_BLUE_LIGHT) }
         col.addView(t)
         if (hint.isNotEmpty()) col.addView(h)
@@ -203,8 +203,8 @@ class GroupChannelActivity : Activity() {
     private fun bindFocus(c: LinearLayout, t: TextView, h: TextView, v: TextView?, a: TextView?) {
         c.setOnFocusChangeListener { _, f ->
             c.background = GradientDrawable().apply {
-                cornerRadius = dp(10).toFloat()
-                setColor(if (f) C_BLUE else 0x14FFFFFF)
+                cornerRadius = dp(12).toFloat()
+                setColor(if (f) C_BLUE else 0xFF161A21.toInt())
                 setStroke(dp(2), if (f) C_WHITE else 0x00000000)
             }
             t.setTextColor(C_WHITE)
