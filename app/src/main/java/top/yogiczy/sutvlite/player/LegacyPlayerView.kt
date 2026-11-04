@@ -153,6 +153,24 @@ class LegacyPlayerView @JvmOverloads constructor(
     }
 
 
+    /** 恢复播放 (从设置/后台返回) */
+    fun resume() {
+        runCatching {
+            if (backend == Backend.MEDIAPLAYER) {
+                if (!videoView.isPlaying) videoView.start()
+            } else {
+                val p = exoPlayer ?: return
+                if (!p.playWhenReady) p.playWhenReady = true
+                if (!p.isPlaying) p.play()
+                // 若因离开界面导致渲染器丢失, 重新准备一次
+                if (p.playbackState == Player.STATE_IDLE) {
+                    p.prepare()
+                }
+            }
+            Logx.i("播放器", "resume: 已恢复")
+        }.onFailure { Logx.e("播放器", "resume 失败: ${it.message}") }
+    }
+
     /** 暂停 (切后台) */
     fun pause() {
         runCatching {

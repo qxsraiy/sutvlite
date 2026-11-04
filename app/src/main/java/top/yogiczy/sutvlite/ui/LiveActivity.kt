@@ -1,4 +1,4 @@
-﻿package top.yogiczy.sutvlite.ui
+package top.yogiczy.sutvlite.ui
 
 import top.yogiczy.sutvlite.AppClock
 import top.yogiczy.sutvlite.Logx
@@ -158,6 +158,24 @@ open class LiveActivity : Activity() {
         super.onResume()
         // 从设置返回: 立即套用分组/频道屏蔽, 不用重启
         if (rawCategories.isNotEmpty()) applyBlockFilterNow()
+
+        // 恢复播放: onStop 里暂停过, 返回时必须主动恢复, 否则画面卡住
+        if (player != null && currentChannelList.isNotEmpty()) {
+            player?.resume()
+            scope.launch {
+                delay(2000)
+                if (!alive()) return@launch
+                if (!playedFirstFrame || player?.isPlaying() != true) {
+                    Logx.w("播放", "返回后未恢复播放, 硬重启一次")
+                    playedFirstFrame = false
+                    showBigSpinner()
+                    player?.restart()
+                    armAutoSwitch()
+                } else {
+                    Logx.i("播放", "返回后已恢复播放")
+                }
+            }
+        }
     }
 
     override fun onStop() {
