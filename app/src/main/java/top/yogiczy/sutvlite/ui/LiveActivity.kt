@@ -80,6 +80,17 @@ open class LiveActivity : Activity() {
     private var loadingTickJob: Job? = null
     private var loadingStartAt = 0L
     private var loadingBaseText = ""
+    /** 开机等待遮罩 (转圈 + 倒计时 + root 提示) */
+    private var bootBox: LinearLayout? = null
+    private var bootCountdown: TextView? = null
+    private var bootTitle: TextView? = null
+    private var bootTickJob: Job? = null
+    /** 版权屏蔽蓝屏 */
+    private var blueBox: LinearLayout? = null
+    private var blueTitle: TextView? = null
+    private var blueMsg: TextView? = null
+    private var blueCountdown: TextView? = null
+    private var blueJob: Job? = null
 
     private var overlay: FrameLayout? = null
     private var groupCol: LinearLayout? = null
@@ -134,6 +145,11 @@ open class LiveActivity : Activity() {
         /** 当前存活的 LiveActivity 实例数 (>1 说明有双播放器风险) */
         @Volatile
         var instanceCount = 0
+
+        /** 预热结果状态 */
+        const val PREFETCH_OK = 0
+        const val PREFETCH_FAIL = 1
+        const val PREFETCH_SHIELD = 2
     }
 
     override fun onResume() {
@@ -263,9 +279,137 @@ open class LiveActivity : Activity() {
         })
 
         buildPanel(root)
+        buildBootBox(root)
+        buildBlueScreen(root)
         setContentView(root)
     }
 
+    /** 开机等待遮罩: 转圈 + 倒计时 + root 提示 */
+    private fun buildBootBox(root: FrameLayout) {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setBackgroundColor(0xF20B1220.toInt())
+            visibility = View.GONE
+            isClickable = true
+        }
+        bootTitle = TextView(this).apply {
+            text = "设备启动后网络重置中"
+            textSize = 24f
+            setTextColor(C_WHITE)
+            gravity = Gravity.CENTER
+            setTypeface(null, android.graphics.Typeface.BOLD)
+        }
+        bootCountdown = TextView(this).apply {
+            textSize = 17f
+            setTextColor(C_BLUE_LIGHT)
+            gravity = Gravity.CENTER
+            setPadding(0, dp(14), 0, 0)
+        }
+        val spinner = android.widget.ProgressBar(this).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(56), dp(56)).apply { gravity = Gravity.CENTER }
+        }
+        val hint = TextView(this).apply {
+            text = "等待网络响应，预计 1~2 分钟\n\n提示：盒子已 root 的话，到「设置 → 特权功能」授权后，\nApp 每次开机会自动校准系统时间，立刻就能播放"
+            textSize = 13f
+            setTextColor(0xFF8FA3C0.toInt())
+            gravity = Gravity.CENTER
+            setPadding(dp(60), dp(24), dp(60), 0)
+            setLineSpacing(dp(3).toFloat(), 1f)
+        }
+        box.addView(spinner)
+        box.addView(bootTitle, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+            setMargins(0, dp(18), 0, 0)
+        })
+        box.addView(bootCountdown)
+        box.addView(hint)
+        bootBox = box
+        root.addView(box, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+    }
+
+    /** 显示开机等待 + 倒计时 */
+    private fun showBootWait(seconds: Int) {
+        if (!alive()) return
+        bootBox?.visibility = View.VISIBLE
+        var left = seconds
+        bootTickJob?.cancel()
+        bootCountdown?.text = "预计还需 ${left} 秒"
+        bootTickJob = scope.launch {
+            while (alive() && left > 0) {
+                delay(1000)
+                left--
+                bootCountdown?.text = "预计还需 ${left} 秒"
+            }
+        }
+    }
+
+    private fun hideBootWait() {
+        bootTickJob?.cancel()
+        bootBox?.visibility = View.GONE
+    }
+
+    /** 版权屏蔽蓝屏: 提示换台, 10 秒后自动换到下一台 */
+    private fun buildBlueScreen(root: FrameLayout) {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setBackgroundColor(0xFF0B2A5B.toInt())
+            visibility = View.GONE
+        }
+        blueTitle = TextView(this).apply {
+            text = "该频道暂无节目"
+            textSize = 34f
+            setTextColor(C_WHITE)
+            gravity = Gravity.CENTER
+            setTypeface(null, android.graphics.Typeface.BOLD)
+        }
+        blueMsg = TextView(this).apply {
+            textSize = 16f
+            setTextColor(C_BLUE_LIGHT)
+            gravity = Gravity.CENTER
+            setPadding(dp(80), dp(16), dp(80), 0)
+        }
+        blueCountdown = TextView(this).apply {
+            textSize = 15f
+            setTextColor(0xFF8FA3C0.toInt())
+            gravity = Gravity.CENTER
+            setPadding(0, dp(20), 0, 0)
+        }
+        box.addView(blueTitle)
+        box.addView(blueMsg)
+        box.addView(blueCountdown)
+        blueBox = box
+        root.addView(box, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+    }
+
+    /** 显示蓝屏并 10 秒后自动换台 */
+    private fun showShieldScreen(message: String) {
+        if (!alive()) return
+        hideLoading()
+        blueMsg?.text = message.ifBlank { "节目播出调整，换个内容看看吧" }
+        blueBox?.visibility = View.VISIBLE
+        blueJob?.cancel()
+        blueJob = scope.launch {
+            var left = 10
+            while (alive() && left > 0) {
+                blueCountdown?.text = "${left} 秒后自动换到下一台（也可按 ↑/↓ 换台）"
+                delay(1000)
+                left--
+            }
+            if (!alive()) return@launch
+            blueBox?.visibility = View.GONE
+            Logx.i("换台", "版权屏蔽自动跳台")
+            nextChannel()
+        }
+    }
+
+    private fun hideShieldScreen() {
+        blueJob?.cancel()
+        blueBox?.visibility = View.GONE
+    }
     /** 三段式选台面板: 分组 | 竖线 | 频道 */
     private fun buildPanel(root: FrameLayout) {
         val ov = FrameLayout(this).apply {
@@ -605,15 +749,15 @@ open class LiveActivity : Activity() {
             // 这段时间不必硬撞(重试也没用), 显示"网络初始化中", 每 5 秒轻量试探一次;
             // 一旦 CDN 接受(或系统时间同步完成) 立刻正常播放。
             if (AppClock.deviceClockInsane()) {
-                Logx.w("时钟", "开机初期(墙钟=${AppClock.nowTextDev()}), 边等边试")
+                Logx.w("时钟", "开机初期(墙钟=${AppClock.nowTextDev()}), 显示等待遮罩")
                 SystemClockFixer.ensureSystemTime() // 已授权则顺手修时钟, 不阻塞
-                // 不再干等: 每 4 秒试探一次, 网络/时钟一就绪立刻往下走
+                showBootWait(120)
                 var waited = 0
                 while (alive() && AppClock.deviceClockInsane() && waited < 120_000) {
-                    showLoading("网络初始化中…")
-                    delay(4_000)
-                    waited += 4_000
+                    delay(2000)
+                    waited += 2000
                 }
+                hideBootWait()
                 if (!alive()) return@launch
                 Logx.i("时钟", "开机初始化完成(等待 ${waited}ms), 开始播放")
             }
@@ -637,19 +781,28 @@ open class LiveActivity : Activity() {
             }
             // 预热: 自己先拉一次清单 (DNS/TLS/校时/playurl/m3u8 全部热起来并进缓存)
             showLoading("连接中…")
-            val warmed = withContext(Dispatchers.IO) { prefetchManifest(url) }
+            val warm = withContext(Dispatchers.IO) { prefetchManifest(url) }
             if (currentChannelList.getOrNull(currentChannelIdx)?.pid != ch.pid) return@launch
+            if (warm == PREFETCH_SHIELD) {
+                // 版权屏蔽 / 节目调整: 蓝屏提示 + 10 秒后自动换台
+                hideLoading()
+                showShieldScreen(shieldDetail)
+                return@launch
+            }
             player?.play(url, isLive = true)
-            if (!warmed) {
-                // 预热失败也照常交给播放器, 由 10 秒硬重启 + 代理/直连互换兜底
-                android.util.Log.w("LiveActivity", "预热失败, 直接播放: ${ch.name}")
+            if (warm == PREFETCH_FAIL) {
+                Logx.w("LiveActivity", "预热失败, 直接播放: ${ch.name}")
             }
             armAutoSwitch()
         }
     }
 
-    /** 预热: 用 app 自己的 OkHttp 拉一次代理清单 (把冷启动开销提前吃在"连接中…"里) */
-    private fun prefetchManifest(url: String): Boolean = try {
+    /** 预热结果状态 */
+
+    /** 版权屏蔽文案 (供蓝屏显示) */
+    private var shieldDetail = "节目播出调整，换个内容看看吧"
+
+    private fun prefetchManifest(url: String): Int = try {
         val client = top.yogiczy.sutvlite.backend.LegacyTls.builder()
             .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
             .readTimeout(40, java.util.concurrent.TimeUnit.SECONDS)
@@ -657,16 +810,21 @@ open class LiveActivity : Activity() {
         val req = okhttp3.Request.Builder().url(url).build()
         val t0 = android.os.SystemClock.elapsedRealtime()
         client.newCall(req).execute().use { resp ->
-            val ok = resp.isSuccessful
-            Logx.i(
-                "预热",
-                "清单 HTTP ${resp.code()} 耗时 ${android.os.SystemClock.elapsedRealtime() - t0}ms"
-            )
-            ok
+            val code = resp.code()
+            val body = runCatching { resp.body()?.string() ?: "" }.getOrDefault("")
+            val ms = android.os.SystemClock.elapsedRealtime() - t0
+            if (code == 598 || body.startsWith("SHIELD|")) {
+                shieldDetail = body.removePrefix("SHIELD|").ifBlank { "节目播出调整，换个内容看看吧" }
+                Logx.w("预热", "版权屏蔽(${ms}ms): $shieldDetail")
+                PREFETCH_SHIELD
+            } else {
+                Logx.i("预热", "清单 HTTP $code 耗时 ${ms}ms")
+                if (resp.isSuccessful) PREFETCH_OK else PREFETCH_FAIL
+            }
         }
     } catch (t: Throwable) {
         Logx.e("预热", "异常: ${t.message}")
-        false
+        PREFETCH_FAIL
     }
 
     /** 8 秒无首帧 → 代理/直连互换 */

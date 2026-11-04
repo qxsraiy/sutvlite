@@ -66,6 +66,9 @@ object LiteServer {
     /** 最近一次 CDN 报告的本机出口 IP (响应头 Host-Ip) */
     @Volatile private var lastHostIp: String? = null
 
+    /** 最近的"版权屏蔽/节目调整"提示 (供 app 显示蓝屏) */
+    @Volatile private var shieldMessage: String? = null
+
     private val rateAttempt = java.util.concurrent.ConcurrentHashMap<String, Int>()
 
     private val rateChain = intArrayOf(3, 2, 1)
@@ -173,9 +176,18 @@ object LiteServer {
             try {
                 val streamUrl = fetchStreamUrl(pid)
                 if (streamUrl == null) {
-                    response.code(502)
-                    response.setContentType("text/plain")
-                    response.send("获取播放地址失败")
+                    val shield = shieldMessage
+                    if (!shield.isNullOrBlank()) {
+                        Logx.w("代理", "pid=$pid 版权屏蔽: $shield")
+                        response.code(598)
+                        response.setContentType("text/plain; charset=utf-8")
+                        response.send("SHIELD|$shield")
+                        shieldMessage = null
+                    } else {
+                        response.code(502)
+                        response.setContentType("text/plain")
+                        response.send("获取播放地址失败")
+                    }
                     Logx.e("代理", "pid=$pid 取流失败")
                     return@launch
                 }
@@ -215,7 +227,13 @@ object LiteServer {
                 val rate = rateChain[idx]
                 val result = MiguApi.getStreamUrlWithRate(pid, rate)
                 if (!result.isSuccess || result.url.isEmpty()) {
-                    Logx.e("代理", "playurl 失败: ${result.error}")
+                    val err = result.error ?: ""
+                    Logx.e("代理", "playurl 失败: $err")
+                    if (err.contains("COPYRIGHT_SHIELD") || err.contains("节目播出调整") ||
+                        err.contains("无节目") || err.contains("节目单")
+                    ) {
+                        shieldMessage = err
+                    }
                     null
                 } else {
                     playUrlCache[pid] = android.os.SystemClock.elapsedRealtime() to result.url
