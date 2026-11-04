@@ -56,6 +56,8 @@ class LiteApp : Application() {
         )
 
         CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+            // 第一件事: 校准应用时钟 (盒子开机墙钟常停在 2016, 用错时间签名会被 CDN 拒绝)
+            runCatching { top.yogiczy.sutvlite.AppClock.calibrate(force = true) }
             runCatching {
                 top.yogiczy.sutvlite.backend.PublicDns.lookup("play.miguvideo.com")
                 android.util.Log.i("LiteApp", "预热 DNS 完成")

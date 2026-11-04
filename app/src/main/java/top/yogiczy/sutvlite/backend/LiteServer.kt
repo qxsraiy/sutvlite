@@ -65,6 +65,11 @@ object LiteServer {
     /** 上游并发上限: 老盒子单核/双核, 同时太多上游请求会把 CPU 打满 -> 卡死 */
     private val upstreamGate = kotlinx.coroutines.sync.Semaphore(4)
 
+    /** 每 pid 已失败的码率档位 (用于清单不可用时降码率) */
+    private val rateAttempt = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
+    private val rateChain = intArrayOf(3, 2, 1)
+
     /** 同一 pid 的并发合并: ExoPlayer 重试时不会重复走 playurl */
     private val inFlight = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.sync.Mutex>()
 
@@ -203,7 +208,9 @@ object LiteServer {
             }
             upstreamGate.withPermit {
                 val t0 = android.os.SystemClock.elapsedRealtime()
-                val result = MiguApi.getStreamUrl720p(pid)
+                val idx = (rateAttempt[pid] ?: 0).coerceIn(0, rateChain.size - 1)
+                val rate = rateChain[idx]
+                val result = MiguApi.getStreamUrlWithRate(pid, rate)
                 if (!result.isSuccess || result.url.isEmpty()) {
                     Logx.e("代理", "playurl 失败: ${result.error}")
                     null
@@ -277,10 +284,16 @@ object LiteServer {
                         "上游非M3U8 code=${resp.code()} ct=${resp.header("Content-Type")} " +
                             "body=${body.take(200).replace("\n", " ")}"
                     )
+                    // 661 等: 该码率/该节点不可用 -> 先降一档码率, 再换节点重试
+                    val pidNow = lastPid.get()
+                    if (pidNow != null) {
+                        val cur = rateAttempt[pidNow] ?: 0
+                        if (cur < rateChain.size - 1) rateAttempt[pidNow] = cur + 1
+                    }
                     if (depth < 2) {
                         val fresh = retryFreshUrl(remoteUrl)
-                        if (fresh != null && fresh != remoteUrl) {
-                            Logx.w("代理", "换节点重试 depth=${depth + 1}")
+                        if (fresh != null) {
+                            Logx.w("代理", "换节点/降码率重试 depth=${depth + 1}")
                             proxyM3u8(fresh, response, depth + 1)
                             return
                         }
@@ -294,6 +307,7 @@ object LiteServer {
                 response.setContentType("application/vnd.apple.mpegurl")
                 response.send(rewritten)
                 masterCache[remoteUrl] = android.os.SystemClock.elapsedRealtime() to rewritten
+                lastPid.get()?.let { rateAttempt.remove(it) }
             }
         } catch (e: Exception) {
             Logx.e("代理", "代理M3U8失败: ${e.message}")
@@ -318,11 +332,13 @@ object LiteServer {
             null
         } else {
             playUrlCache.remove(pid)
-            val r = MiguApi.getStreamUrl720p(pid)
+            val ridx = (rateAttempt[pid] ?: 0).coerceIn(0, rateChain.size - 1)
+            val r = MiguApi.getStreamUrlWithRate(pid, rateChain[ridx])
             if (r.isSuccess && r.url.isNotEmpty()) {
                 val finalUrl = resolveRedirect(r.url).ifEmpty { r.url }
                 playUrlCache[pid] = android.os.SystemClock.elapsedRealtime() to r.url
-                if (finalUrl != oldUrl) finalUrl else null
+                // 即使地址相同也返回: 降码率/重签后同一 URL 也可能变可用
+                finalUrl
             } else {
                 null
             }

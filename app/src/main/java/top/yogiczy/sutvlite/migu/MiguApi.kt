@@ -1,5 +1,8 @@
 ﻿package top.yogiczy.sutvlite.migu
 
+import top.yogiczy.sutvlite.AppClock
+import top.yogiczy.sutvlite.Logx
+
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
@@ -142,6 +145,9 @@ object MiguApi {
         return last ?: MiguStreamResult(url = "", rateType = 0, content = null, error = "未知错误")
     }
 
+    /** 指定码率取流 (供代理在清单不可用时降码率重试) */
+    suspend fun getStreamUrlWithRate(pid: String, rate: Int): MiguStreamResult = tryRate(pid, rate)
+
     /** 单个码率: 最多 2 次 (第二次针对时间戳过期重建签名) */
     private suspend fun tryRate(pid: String, rate: Int): MiguStreamResult {
         var last: MiguStreamResult? = null
@@ -192,12 +198,57 @@ object MiguApi {
     @Volatile private var timeOffsetMs: Long? = null
     @Volatile private var lastSyncAt = 0L
     private val SYNC_TTL_MS = 5 * 60 * 1000L
+    /** 2020-01-01; 早于此说明设备时钟不可信 */
+    private val SANE_MS = 1_577_836_800_000L
+
+    /** 设备墙钟是否明显不对 (盒子无 RTC, 开机初期常停在固件日期 2016) */
+    private fun deviceClockInsane(): Boolean = System.currentTimeMillis() < SANE_MS
 
     private fun nowMs(): Long {
-        val cached = timeOffsetMs
-        val stale = System.currentTimeMillis() - lastSyncAt > SYNC_TTL_MS
-        val offset = if (cached == null || stale) syncTimeOffset() else cached
-        return System.currentTimeMillis() + offset
+        // 统一走 AppClock (应用自带时钟): 开机墙钟错误时也能给出正确的签名时间戳
+        if (!AppClock.isCalibrated()) AppClock.calibrate()
+        val t = AppClock.now()
+        return t
+    }
+
+    @Suppress("unused")
+    private fun nowMsLegacy(): Long {
+        // 关键: 开机初期墙钟可能还是 2016, 此时必须用(持久化的)服务器偏移,
+        // 否则签名里的 timestamp 是 2016 -> 咪咕返回的流地址被 CDN 拒绝(661),
+        // 表现为"第一次死活打不开, 退出重进就好了"(重进时系统时间已校准)
+        var cached = timeOffsetMs ?: restoreOffset()
+        if (cached != null && timeOffsetMs == null) timeOffsetMs = cached
+        val stale = cached == null || System.currentTimeMillis() - lastSyncAt > SYNC_TTL_MS
+        val offset = if (stale) syncTimeOffset() else (cached ?: 0L)
+        val signedNow = System.currentTimeMillis() + offset
+        Logx.i(
+            "校时",
+            "设备=${fmtNow(System.currentTimeMillis())} 偏移=${offset / 86_400_000}天 " +
+                "签名=${fmtNow(signedNow)} 墙钟异常=${deviceClockInsane()}"
+        )
+        return signedNow
+    }
+
+    private fun fmtNow(ms: Long): String =
+        java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(java.util.Date(ms))
+
+    /** 恢复上次成功校准的偏移 (仅在设备墙钟异常时使用, 避免墙钟跳变后算错) */
+    private fun restoreOffset(): Long? = try {
+        val saved = top.yogiczy.mytv.core.data.utils.SP.getLong("migu_offset_ms", Long.MIN_VALUE)
+        when {
+            saved == Long.MIN_VALUE || saved == 0L -> null
+            deviceClockInsane() -> {
+                Logx.w("校时", "墙钟异常, 使用上次校准偏移 ${saved / 86_400_000}天")
+                saved
+            }
+            else -> null
+        }
+    } catch (_: Throwable) {
+        null
+    }
+
+    private fun persistOffset(offset: Long) {
+        runCatching { top.yogiczy.mytv.core.data.utils.SP.putLong("migu_offset_ms", offset) }
     }
 
     /** 用服务器给的时间戳刷新偏移 (响应里的 timeStamp 是权威时间) */
@@ -206,7 +257,9 @@ object MiguApi {
         val offset = serverMs - System.currentTimeMillis()
         timeOffsetMs = offset
         lastSyncAt = System.currentTimeMillis()
+        persistOffset(offset)
         logger.info("按响应校准时钟偏移: ${offset}ms (${offset / 3_600_000}h)")
+        Logx.i("校时", "响应校准偏移 ${offset / 86_400_000}天")
     }
 
     private fun syncTimeOffset(): Long {
@@ -222,11 +275,20 @@ object MiguApi {
                 logger.info("时间校准: 服务器=$serverMs 本机=$deviceMs 偏移=${offset}ms (${offset / 3_600_000}h)")
                 timeOffsetMs = offset
                 lastSyncAt = deviceMs
+                if (serverMs != null) {
+                    persistOffset(offset)
+                    runCatching {
+                        top.yogiczy.mytv.core.data.utils.SP.putLong("migu_server_ms", serverMs)
+                    }
+                }
+                Logx.i("校时", "HTTP Date 校准偏移 ${offset / 86_400_000}天")
                 offset
             }
         } catch (t: Throwable) {
             logger.warning("时间校准失败: ${t.message}")
-            timeOffsetMs ?: 0L
+            Logx.w("校时", "HTTP Date 校准失败: ${t.message}")
+            // 校准失败时: 若墙钟异常, 尽量用持久化偏移兜底
+            timeOffsetMs ?: restoreOffset() ?: 0L
         }
     }
 

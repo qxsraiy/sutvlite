@@ -1,5 +1,6 @@
 ﻿package top.yogiczy.sutvlite.ui
 
+import top.yogiczy.sutvlite.AppClock
 import top.yogiczy.sutvlite.Logx
 
 import android.app.Activity
@@ -102,6 +103,8 @@ open class LiveActivity : Activity() {
     private var hardRestartDone = false
     /** 连续失败次数: 超过上限就停止重试, 避免无限重试风暴把盒子拖死 */
     private var failStreak = 0
+    /** 本次会话已自动跳过的坏频道数 (上限 5, 防止全挂时疯狂跳台) */
+    private var autoSkipCount = 0
     private var bannerHideJob: Job? = null
     private var hintHideJob: Job? = null
     private var starting = false
@@ -375,6 +378,12 @@ open class LiveActivity : Activity() {
             }
             if (waited > 0) Logx.i("网络", "链路就绪, 等待 ${waited}ms")
             showLoading("网络已连接，加载中…")
+            // 校准应用时钟 (签名必需), 最多等 6 秒
+            if (!AppClock.isCalibrated() || AppClock.isStale()) {
+                showLoading("正在校准时间…")
+                val ok = AppClock.ensureCalibrated(6000)
+                Logx.i("时钟", "启动校准结果=$ok 现在=${AppClock.nowText()}")
+            }
             ensureLocalServer()
 
             Logx.i("启动", "开始加载频道列表")
@@ -525,6 +534,16 @@ open class LiveActivity : Activity() {
                     autoSwitchJob?.cancel()
                     restartJob?.cancel()
                     autoSwitchJob = scope.launch {
+                        // 同一频道连续失败 2 次 -> 判定为坏频道, 自动跳到下一个可播频道
+                        if (failStreak >= 2 && autoSkipCount < 5) {
+                            autoSkipCount++
+                            val skipped = currentChannelList.getOrNull(currentChannelIdx)?.name ?: "?"
+                            nextChannel()
+                            showHint("「$skipped」暂不可用，已切到下一个频道")
+                            Logx.w("换台", "跳过坏频道「$skipped」($autoSkipCount)")
+                            delay(1000)
+                            return@launch
+                        }
                         val waitMs = minOf(3_000L * failStreak, 10_000L)
                         val nextProxy = !useProxy
                         showHint(
@@ -584,6 +603,14 @@ open class LiveActivity : Activity() {
                     player?.play(direct, isLive = true)
                     armAutoSwitch()
                     return@launch
+                }
+            }
+            // 签名需要正确的时间戳: 时钟没校准先等它 (开机初期墙钟可能是 2016)
+            if (!AppClock.isCalibrated() || AppClock.isStale()) {
+                showLoading("正在校准时间…")
+                val clockOk = AppClock.ensureCalibrated(8000)
+                if (!clockOk) {
+                    Logx.w("时钟", "校准失败, 时钟异常=${AppClock.deviceClockInsane()}, 仍尝试播放")
                 }
             }
             // 预热: 自己先拉一次清单 (DNS/TLS/校时/playurl/m3u8 全部热起来并进缓存)

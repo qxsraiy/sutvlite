@@ -170,7 +170,7 @@ class LegacyPlayerView @JvmOverloads constructor(
         transientRetries = 0
         retryHandler.removeCallbacks(retryRunnable)
         Logx.i("播放器", "play(${url.take(70)})")
-        useExo(url)
+        useExo(url, isLiveHls = isLive)
         scheduleWatchdog()
     }
 
@@ -266,7 +266,7 @@ class LegacyPlayerView @JvmOverloads constructor(
         backend = Backend.EXO
     }
 
-    private fun useExo(url: String) {
+    private fun useExo(url: String, isLiveHls: Boolean = currentIsLive) {
         ensureExo()
         val p = exoPlayer ?: return
         exoView.visibility = VISIBLE
@@ -282,7 +282,13 @@ class LegacyPlayerView @JvmOverloads constructor(
             .setConnectTimeoutMs(20000)
             .setReadTimeoutMs(30000)
             .setAllowCrossProtocolRedirects(true)
-        val hls = HlsMediaSource.Factory(dataSource).createMediaSource(MediaItem.fromUri(url))
+        // 直播地址常常没有 .m3u8 后缀(如 .../51/index), 必须显式声明 HLS 类型,
+        // 否则 ExoPlayer 无法判断容器格式 (直连模式下会直接报 2004/2001)
+        val item = MediaItem.Builder()
+            .setUri(url)
+            .apply { if (isLiveHls) setMimeType(com.google.android.exoplayer2.util.MimeTypes.APPLICATION_M3U8) }
+            .build()
+        val hls = HlsMediaSource.Factory(dataSource).createMediaSource(item)
         runCatching {
             p.setMediaSource(hls)
             p.prepare()
