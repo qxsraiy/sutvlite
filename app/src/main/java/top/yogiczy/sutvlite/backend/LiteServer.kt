@@ -1,4 +1,4 @@
-﻿package top.yogiczy.sutvlite.backend
+package top.yogiczy.sutvlite.backend
 
 import top.yogiczy.sutvlite.Logx
 
@@ -231,11 +231,8 @@ object LiteServer {
         io.launch {
             try {
                 val encoded = request.path.substringAfter("/miguprox/")
-                val decoded = java.net.URLDecoder.decode(encoded, "UTF-8")
-                // 分片/子清单同样优先 HTTPS, 避开盒子/运营商对 HTTP 的拦截(661)
-                val targetUrl = if (decoded.startsWith("http://", true)) {
-                    "https://" + decoded.substring(7)
-                } else decoded
+                // 保持原协议: 咪咕 CDN 走明文端口(80/8080), 强行 HTTPS 只会握手失败(502)
+                val targetUrl = java.net.URLDecoder.decode(encoded, "UTF-8")
 
                 val req = Request.Builder()
                     .url(targetUrl)
@@ -278,6 +275,13 @@ object LiteServer {
      * 所以这里**优先用 HTTPS**(同主机同路径)拉清单, 不通再回落 HTTP;
      * 两者都失败才降码率/换节点重试, 绝不把坏响应丢给播放器。
      */
+    /**
+     * 拉主清单并改写。
+     *
+     * 注意: 咪咕 CDN 是**明文 HTTP**(80/8080), 不能对它做 HTTPS 握手
+     * (会报 SSL23_GET_SERVER_HELLO:unknown protocol, 还多耗 0.5~1.5 秒)。
+     * 所以这里固定用 HTTP; 失败时: 重新签发 URL(换出口IP/节点) + 降码率, 最多 6 轮。
+     */
     private suspend fun proxyM3u8(pid: String, remoteUrl: String, response: AsyncHttpServerResponse, depth: Int = 0) {
         try {
             masterCache[remoteUrl]?.let { (t, body) ->
@@ -288,82 +292,43 @@ object LiteServer {
                 }
             }
 
-            val candidates = ArrayList<String>(2)
-            if (remoteUrl.startsWith("http://", ignoreCase = true)) {
-                candidates.add("https://" + remoteUrl.substring(7))
-            }
-            candidates.add(remoteUrl)
-
-            var okBase: String? = null
-            var okBody: String? = null
-            var lastCode = 0
-            var lastBody = ""
-            var lastUrl = remoteUrl
-
-            for (cand in candidates) {
-                try {
-                    val req = Request.Builder()
-                        .url(cand)
-                        .header("User-Agent", UA)
-                        .header("Referer", "https://www.miguvideo.com/")
-                        .get()
-                        .build()
-                    proxyClient.newCall(req).execute().use { r ->
-                        val b = r.body()?.string() ?: ""
-                        if (r.code() == 200 && b.trimStart().startsWith("#EXTM3U")) {
-                            okBase = r.request().url().toString()
-                            okBody = b
-                            if (cand != remoteUrl) Logx.i("代理", "HTTPS 拉清单成功(绕过HTTP拦截)")
-                        } else {
-                            lastCode = r.code()
-                            lastBody = b
-                            lastUrl = cand
-                            if (cand != remoteUrl && r.code() != 200) {
-                                Logx.w("代理", "HTTPS 失败 code=${r.code()}, 回落 HTTP")
-                            }
-                        }
-                    }
-                } catch (t: Throwable) {
-                    Logx.w("代理", "${cand.take(6)} 请求异常: ${t.message}")
-                }
-                if (okBody != null) break
-            }
-
-            val body = okBody
-            val baseUrl = okBase
-            if (body == null || baseUrl == null) {
-                Logx.e("代理", "上游非M3U8 code=$lastCode url=${lastUrl.take(130)}")
-                Logx.e("代理", "响应体: ${lastBody.take(200).replace("\n", " ")}")
-                val cur = rateAttempt[pid] ?: 0
-                if (cur < rateChain.size - 1) {
-                    rateAttempt[pid] = cur + 1
-                    Logx.w("代理", "清单不可用, 降码率 ${rateChain[cur]} -> ${rateChain[cur + 1]}")
-                }
-                if (depth < 2) {
-                    val fresh = retryFreshUrl(pid, remoteUrl)
-                    if (fresh != null) {
-                        Logx.w("代理", "换节点/降码率重试 depth=${depth + 1}")
-                        proxyM3u8(pid, fresh, response, depth + 1)
-                        return
-                    }
-                }
-                response.code(502)
-                response.setContentType("text/plain")
-                response.send("上游不是M3U8(HTTP $lastCode)")
+            val fr = fetchRobust(remoteUrl, wantM3u8 = true)
+            val base = fr.base
+            if (fr.code == 200 && base != null) {
+                val rewritten = rewriteM3u8(String(fr.bytes, Charsets.UTF_8), base)
+                response.setContentType("application/vnd.apple.mpegurl")
+                response.send(rewritten)
+                masterCache[remoteUrl] = android.os.SystemClock.elapsedRealtime() to rewritten
+                rateAttempt.remove(pid)
                 return
             }
 
-            val rewritten = rewriteM3u8(body, baseUrl)
-            response.setContentType("application/vnd.apple.mpegurl")
-            response.send(rewritten)
-            masterCache[remoteUrl] = android.os.SystemClock.elapsedRealtime() to rewritten
-            rateAttempt.remove(pid)
+            if (depth == 0) {
+                Logx.e("代理", "清单不可用 code=${fr.code} hostIp=${fr.hostIp} (将重新签发重试)")
+            }
+            // 降码率
+            val cur = rateAttempt[pid] ?: 0
+            if (cur < rateChain.size - 1) {
+                rateAttempt[pid] = cur + 1
+                Logx.w("代理", "降码率 ${rateChain[cur]} -> ${rateChain[cur + 1]}")
+            }
+            // 重新签发 URL (新 URL 会绑定当前出口 IP) 并重试
+            if (depth < 6) {
+                kotlinx.coroutines.delay(300)
+                val fresh = retryFreshUrl(pid, remoteUrl)
+                if (fresh != null) {
+                    proxyM3u8(pid, fresh, response, depth + 1)
+                    return
+                }
+            }
+            response.code(502)
+            response.setContentType("text/plain")
+            response.send("上游不可用(HTTP ${fr.code})")
         } catch (e: Exception) {
             Logx.e("代理", "代理M3U8失败: ${e.message}")
             if (depth < 2) {
                 val fresh = retryFreshUrl(pid, remoteUrl)
                 if (fresh != null) {
-                    Logx.w("代理", "异常后换节点重试 depth=${depth + 1}")
                     proxyM3u8(pid, fresh, response, depth + 1)
                     return
                 }
@@ -374,8 +339,6 @@ object LiteServer {
         }
     }
 
-
-    /** 清掉该频道 playurl 缓存并重新签发, 拿到新的清单地址 (换 CDN 节点) */
     private suspend fun retryFreshUrl(pid: String, oldUrl: String): String? = try {
         if (pid.isBlank()) {
             null
