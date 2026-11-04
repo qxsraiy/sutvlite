@@ -200,6 +200,7 @@ object MiguApi {
     private val SYNC_TTL_MS = 5 * 60 * 1000L
     /** 2020-01-01; 早于此说明设备时钟不可信 */
     private val SANE_MS = 1_577_836_800_000L
+    @Volatile private var lastLoggedOffset = Long.MIN_VALUE
 
     /** 设备墙钟是否明显不对 (盒子无 RTC, 开机初期常停在固件日期 2016) */
     private fun deviceClockInsane(): Boolean = System.currentTimeMillis() < SANE_MS

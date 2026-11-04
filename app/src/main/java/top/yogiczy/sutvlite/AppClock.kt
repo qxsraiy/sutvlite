@@ -1,38 +1,40 @@
 package top.yogiczy.sutvlite
 
 import okhttp3.Request
-import top.yogiczy.mytv.core.data.utils.SP
 
 /**
- * 应用自带时钟 (解决盒子无 RTC / 开机初期墙钟错误)
+ * 应用自带时钟 —— **服务器时间锚点 + 单调计时**方案
  *
- * 为什么需要:
- *   盒子断电后时钟回到固件日期(2016), 咪咕 playurl 的签名里带 timestamp,
- *   用 2016 的时间签名 -> 返回的流地址会被 CDN 拒绝(661),
- *   表现为"开机第一次死活打不开, 退出重进(系统时间校准后)就好了"。
+ * 为什么不用"设备墙钟 + 偏移":
+ *   盒子断电后墙钟会停在固件日期(2016), 又会在开机后被系统/NTP 改成 2026。
+ *   一旦墙钟跳变, 之前算出的偏移就全错了(签名时间会变成 2036), 咪咕直接拒绝。
  *
- * 做法:
- *   - 用 HTTP 响应的 Date 头校准(多域名依次尝试), 算出与真实时间的偏移
- *   - 偏移持久化: 下次开机墙钟又错时, 直接用上次的服务器绝对时间兜底
- *   - 所有签名统一走 AppClock.now(), 不再各处自己算
- *   - 开机第一件事就校准, 需要的地方 ensureCalibrated() 等它就绪
+ * 现在的做法:
+ *   校准时拿到服务器时间 serverMs, 记下当时的开机计时 elapsedRealtime。
+ *   之后 now() = serverMs + (elapsedRealtime - 校准时的 elapsedRealtime)
+ *   —— 与设备墙钟彻底解耦, 墙钟怎么跳都不影响。
+ *
+ * 时间源: 依次请求多个站点的 HTTP Date 头 (play.miguvideo.com / baidu / taobao),
+ *         任一成功即用; 结果 30 分钟内有效, 过期自动重校。
  */
 object AppClock {
 
-    /** 2020-01-01: 早于此认为设备墙钟不可信 */
+    /** 2020-01-01: 早于此认为时间不可信 */
     private const val SANE_MS = 1_577_836_800_000L
 
-    /** 校准有效期 5 分钟 */
-    private const val TTL_MS = 5 * 60 * 1000L
+    /** 校准有效期 30 分钟 (单调计时, 漂移极小) */
+    private const val TTL_MS = 30 * 60 * 1000L
 
-    private val urls = listOf(
+    private val sources = listOf(
         "https://play.miguvideo.com/",
         "https://www.baidu.com/",
         "https://www.taobao.com/",
     )
 
-    @Volatile private var offsetMs: Long? = null
-    @Volatile private var calibratedElapsed = 0L
+    /** 锚点: 校准时刻的服务器时间 (ms) */
+    @Volatile private var anchorServerMs = 0L
+    /** 锚点: 校准时刻的开机计时 (ms, 单调, 不受墙钟影响) */
+    @Volatile private var anchorElapsed = 0L
     @Volatile private var syncing = false
 
     private val client by lazy {
@@ -42,27 +44,25 @@ object AppClock {
             .build()
     }
 
-    /** 当前校准过的时间 */
-    fun now(): Long = System.currentTimeMillis() + (offsetMs ?: 0L)
+    /** 当前时间: 锚点 + 单调计时增量; 未校准时退回设备墙钟 */
+    fun now(): Long =
+        if (anchorServerMs > 0) anchorServerMs + (android.os.SystemClock.elapsedRealtime() - anchorElapsed)
+        else System.currentTimeMillis()
 
-    fun isCalibrated(): Boolean = offsetMs != null
+    fun isCalibrated(): Boolean = anchorServerMs > 0
 
     fun isStale(): Boolean =
-        offsetMs == null ||
-            android.os.SystemClock.elapsedRealtime() - calibratedElapsed > TTL_MS
+        anchorServerMs <= 0 ||
+            android.os.SystemClock.elapsedRealtime() - anchorElapsed > TTL_MS
 
-    /** 设备墙钟是否明显不对 */
+    /** 设备墙钟是否明显不对 (仅用于日志/提示) */
     fun deviceClockInsane(): Boolean = System.currentTimeMillis() < SANE_MS
 
-    /** 已校准时间可读形式 (日志用) */
     fun nowText(): String =
         java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US)
             .format(java.util.Date(now()))
 
-    /**
-     * 同步校准 (阻塞, 只能在后台线程调用)
-     * @return 是否校准成功
-     */
+    /** 同步校准 (阻塞, 后台线程调用)。返回是否成功 */
     fun calibrate(force: Boolean = false): Boolean {
         if (!force && !isStale()) return true
         synchronized(this) {
@@ -70,83 +70,57 @@ object AppClock {
             syncing = true
         }
         try {
-            // 1) 先用持久化的服务器时间兜底 (墙钟错的时候也能立刻拿到合理时间)
-            if (offsetMs == null && deviceClockInsane()) restoreFromDisk()
-
-            // 2) 依次尝试多个域名取 Date 头
-            for (url in urls) {
+            for (url in sources) {
                 val serverMs = try {
                     val req = Request.Builder().url(url).head().build()
-                    client.newCall(req).execute().use { resp ->
-                        parseDate(resp.header("Date"))
-                    }
+                    client.newCall(req).execute().use { resp -> parseDate(resp.header("Date")) }
                 } catch (t: Throwable) {
-                    Logx.w("时钟", "校准失败($url): ${t.message}")
+                    Logx.w("时钟", "取时失败($url): ${t.message}")
                     null
                 }
                 if (serverMs != null && serverMs > SANE_MS) {
-                    val offset = serverMs - System.currentTimeMillis()
-                    offsetMs = offset
-                    calibratedElapsed = android.os.SystemClock.elapsedRealtime()
-                    runCatching {
-                        SP.putLong("clock_server_ms", serverMs)
-                        SP.putLong("clock_offset_ms", offset)
-                    }
+                    anchorServerMs = serverMs
+                    anchorElapsed = android.os.SystemClock.elapsedRealtime()
                     Logx.i(
                         "时钟",
-                        "校准成功($url) 偏移=${offset / 86_400_000}天 现在=${nowText()} " +
+                        "校准成功($url) 现在=${nowText()} 设备墙钟=${fmt(System.currentTimeMillis())} " +
                             "墙钟异常=${deviceClockInsane()}"
                     )
                     return true
                 }
             }
-            Logx.e("时钟", "全部域名校准失败, 当前偏移=${(offsetMs ?: 0L) / 86_400_000}天")
+            Logx.e("时钟", "所有时间源都失败, 当前=${if (isCalibrated()) nowText() else "未校准"}")
             return isCalibrated()
         } finally {
             synchronized(this) { syncing = false }
         }
     }
 
-    /** 等待校准完成 (校验到超时), 供直播启动/换台前调用 */
-    suspend fun ensureCalibrated(timeoutMs: Long = 6000): Boolean {
+    /** 等待校准可用 (供播放前调用) */
+    suspend fun ensureCalibrated(timeoutMs: Long = 8000): Boolean {
         if (!isStale()) return true
         val deadline = System.currentTimeMillis() + timeoutMs
-        calibrate()
         while (System.currentTimeMillis() < deadline) {
-            if (!isStale()) return true
-            kotlinx.coroutines.delay(400)
-            calibrate()
+            if (calibrate()) return true
+            kotlinx.coroutines.delay(500)
         }
         return isCalibrated()
     }
 
-    /** 用服务器返回的权威时间戳刷新 (playurl 响应里的 timeStamp) */
-    fun applyServerTime(serverMs: Long) {
+    /**
+     * playurl 响应里的 timeStamp 只是"我们请求时发的 timestamp"的回显,
+     * 用它校准会自我强化错误, 所以不采信; 这里仅在偏差过大时记一条日志。
+     */
+    fun observeServerTime(serverMs: Long) {
         if (serverMs <= SANE_MS) return
-        val offset = serverMs - System.currentTimeMillis()
-        offsetMs = offset
-        calibratedElapsed = android.os.SystemClock.elapsedRealtime()
-        runCatching {
-            SP.putLong("clock_server_ms", serverMs)
-            SP.putLong("clock_offset_ms", offset)
+        val diff = serverMs - now()
+        if (diff > 120_000 || diff < -120_000) {
+            Logx.w("时钟", "响应时间戳与本地偏差 ${diff / 1000}s (疑似回显, 忽略)")
         }
-        Logx.i("时钟", "按服务器响应校准 偏移=${offset / 86_400_000}天")
     }
 
-    /** 墙钟异常时, 用上次保存的服务器时间兜底 (近似"现在") */
-    private fun restoreFromDisk() {
-        val savedServer = runCatching { SP.getLong("clock_server_ms", 0L) }.getOrDefault(0L)
-        if (savedServer > SANE_MS) {
-            val offset = savedServer - System.currentTimeMillis()
-            offsetMs = offset
-            calibratedElapsed = android.os.SystemClock.elapsedRealtime()
-            Logx.w(
-                "时钟",
-                "墙钟异常, 用上次服务器时间兜底 偏移≈${offset / 86_400_000}天 " +
-                    "(上次=${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(java.util.Date(savedServer))})"
-            )
-        }
-    }
+    private fun fmt(ms: Long): String =
+        java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US).format(java.util.Date(ms))
 
     private fun parseDate(s: String?): Long? {
         if (s.isNullOrBlank()) return null

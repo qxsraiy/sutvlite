@@ -1,4 +1,4 @@
-﻿package top.yogiczy.sutvlite.backend
+package top.yogiczy.sutvlite.backend
 
 import top.yogiczy.sutvlite.Logx
 
@@ -45,9 +45,6 @@ object LiteServer {
 
     /** 服务是否已成功 listen (冷启动时 Activity 要等它, 否则首次请求直接 Connection refused) */
     @Volatile private var ready = false
-
-    /** 当前正在处理的频道 pid (供"换节点重试"用) */
-    private val lastPid = java.lang.ThreadLocal<String?>()
 
     fun isReady(): Boolean = ready
 
@@ -180,7 +177,7 @@ object LiteServer {
                 if (!fallback) {
                     response.redirect(finalUrl)
                 } else {
-                    proxyM3u8(finalUrl, response)
+                    proxyM3u8(pid, finalUrl, response)
                 }
                 Logx.i(
                     "代理",
@@ -260,7 +257,7 @@ object LiteServer {
      * 上游返回非 m3u8 (403/HTML 错误页/空) 时 → 换新节点重试，绝不把坏响应丢给播放器。
      * 以前直接回 502 文本，ExoPlayer 会报 code=2004(内容类型不合法)，表现为"第一次打不开"。
      */
-    private suspend fun proxyM3u8(remoteUrl: String, response: AsyncHttpServerResponse, depth: Int = 0) {
+    private suspend fun proxyM3u8(pid: String, remoteUrl: String, response: AsyncHttpServerResponse, depth: Int = 0) {
         try {
             masterCache[remoteUrl]?.let { (t, body) ->
                 if (android.os.SystemClock.elapsedRealtime() - t < MASTER_TTL) {
@@ -285,16 +282,16 @@ object LiteServer {
                             "body=${body.take(200).replace("\n", " ")}"
                     )
                     // 661 等: 该码率/该节点不可用 -> 先降一档码率, 再换节点重试
-                    val pidNow = lastPid.get()
-                    if (pidNow != null) {
-                        val cur = rateAttempt[pidNow] ?: 0
-                        if (cur < rateChain.size - 1) rateAttempt[pidNow] = cur + 1
+                    val cur = rateAttempt[pid] ?: 0
+                    if (cur < rateChain.size - 1) {
+                        rateAttempt[pid] = cur + 1
+                        Logx.w("代理", "清单不可用, 降码率 ${rateChain[cur]} -> ${rateChain[cur + 1]}")
                     }
                     if (depth < 2) {
-                        val fresh = retryFreshUrl(remoteUrl)
+                        val fresh = retryFreshUrl(pid, remoteUrl)
                         if (fresh != null) {
                             Logx.w("代理", "换节点/降码率重试 depth=${depth + 1}")
-                            proxyM3u8(fresh, response, depth + 1)
+                            proxyM3u8(pid, fresh, response, depth + 1)
                             return
                         }
                     }
@@ -307,15 +304,15 @@ object LiteServer {
                 response.setContentType("application/vnd.apple.mpegurl")
                 response.send(rewritten)
                 masterCache[remoteUrl] = android.os.SystemClock.elapsedRealtime() to rewritten
-                lastPid.get()?.let { rateAttempt.remove(it) }
+                rateAttempt.remove(pid)
             }
         } catch (e: Exception) {
             Logx.e("代理", "代理M3U8失败: ${e.message}")
             if (depth < 2) {
-                val fresh = retryFreshUrl(remoteUrl)
-                if (fresh != null && fresh != remoteUrl) {
+                val fresh = retryFreshUrl(pid, remoteUrl)
+                if (fresh != null) {
                     Logx.w("代理", "异常后换节点重试 depth=${depth + 1}")
-                    proxyM3u8(fresh, response, depth + 1)
+                    proxyM3u8(pid, fresh, response, depth + 1)
                     return
                 }
             }
@@ -326,9 +323,8 @@ object LiteServer {
     }
 
     /** 清掉该频道 playurl 缓存并重新签发, 拿到新的清单地址 (换 CDN 节点) */
-    private suspend fun retryFreshUrl(oldUrl: String): String? = try {
-        val pid = lastPid.get()
-        if (pid.isNullOrBlank()) {
+    private suspend fun retryFreshUrl(pid: String, oldUrl: String): String? = try {
+        if (pid.isBlank()) {
             null
         } else {
             playUrlCache.remove(pid)
