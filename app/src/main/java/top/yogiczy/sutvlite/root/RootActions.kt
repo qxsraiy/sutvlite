@@ -172,6 +172,65 @@ object RootActions {
         }
     }
 
+    // ─── 强制独占桌面 (会 pm disable 其它桌面, 谨慎使用) ───
+
+    /** 是否处于"强制独占"状态 (有被我们禁用的桌面记录) */
+    fun isExclusiveHome(): Boolean =
+        top.yogiczy.mytv.core.data.utils.SP.getString(SP_DISABLED_LAUNCHERS, "")
+            .split(",").any { it.trim().isNotEmpty() }
+
+    /**
+     * 强制独占桌面: 禁用其它所有桌面, 按 HOME 一定进本应用。
+     * 注意: 老盒子的厂商守护脚本可能反复尝试重启被禁用的桌面, 导致 CPU 偏高,
+     *      所以默认不开启, 单独一个开关由用户决定。
+     */
+    fun setExclusiveHome(enable: Boolean): String {
+        if (!enable) return releaseExclusiveHome()
+        if (!RootManager.isGranted && !RootManager.requestRoot()) {
+            return "失败: 需要 root 权限"
+        }
+        setHomeComponent(true)
+        Thread.sleep(200)
+        su("pm set-home-activity ${homeComp().flattenToString()}", 15000)
+
+        val pm = ctx().packageManager
+        val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+        val others = pm.queryIntentActivities(intent, 0)
+            .map { it.activityInfo.packageName }
+            .filter { it != ourPkg() }
+            .distinct()
+        if (others.isEmpty()) return "已是唯一桌面 ✅"
+
+        val disabledNow = mutableListOf<String>()
+        for (pkg in others) {
+            val s1 = su("pm disable $pkg", 12000)
+            val s2 = if (s1?.success != true) su("pm disable-user $pkg", 12000) else s1
+            val s3 = if (s2?.success != true) su("pm disable-user --user 0 $pkg", 12000) else s2
+            if (s3?.success == true) disabledNow.add(pkg)
+        }
+        if (disabledNow.isEmpty()) return "失败: 无法禁用其它桌面(${others.joinToString()})"
+        top.yogiczy.mytv.core.data.utils.SP.putString(
+            SP_DISABLED_LAUNCHERS, disabledNow.joinToString(",")
+        )
+        Thread.sleep(400)
+        return "已强制独占桌面 ✅（禁用 ${disabledNow.joinToString()}）"
+    }
+
+    /** 解除强制独占: 恢复被我们禁用的桌面 */
+    fun releaseExclusiveHome(): String {
+        val recorded = top.yogiczy.mytv.core.data.utils.SP
+            .getString(SP_DISABLED_LAUNCHERS, "")
+            .split(",").map { it.trim() }.filter { it.isNotEmpty() }
+        if (recorded.isEmpty()) return "已是普通模式"
+        if (!RootManager.isGranted) return "失败: 需要 root 才能恢复其它桌面"
+        var ok = 0
+        for (pkg in recorded) {
+            if (su("pm enable $pkg", 12000)?.success == true) ok++
+        }
+        top.yogiczy.mytv.core.data.utils.SP.putString(SP_DISABLED_LAUNCHERS, "")
+        return if (ok > 0) "已恢复 $ok 个桌面应用 ✅" else "恢复失败: ${recorded.joinToString()}"
+    }
+
     /**
      * 关闭: 先恢复其它桌面 (有 root 才需要), 再禁用我们自己的桌面入口
      * -> 本 app 立刻失去 HOME 身份, 变回普通应用

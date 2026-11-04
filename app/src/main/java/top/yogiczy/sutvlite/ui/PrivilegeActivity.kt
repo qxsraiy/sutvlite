@@ -34,6 +34,8 @@ class PrivilegeActivity : Activity() {
     private var cachedSystem = false
 
     private var cachedLauncher = false
+    private var cachedExclusive = false
+    private var cachedBoot = false
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
@@ -52,7 +54,7 @@ class PrivilegeActivity : Activity() {
             setTypeface(null, android.graphics.Typeface.BOLD)
         })
         page.addView(TextView(this).apply {
-            text = "需要盒子已 root（KingRoot / Magisk 等）"
+            text = "开机自启 / 锁定桌面可免 root；系统应用 / 独占桌面 / 诊断需要 root"
             textSize = 12f
             setTextColor(C_BLUE_LIGHT)
             setPadding(0, dp(6), 0, dp(10))
@@ -132,9 +134,21 @@ class PrivilegeActivity : Activity() {
             }
         }))
 
+        page.addView(toggleRow("强制独占桌面", { if (cachedExclusive) "开" else "关" }, { on, cb ->
+            cb("处理中…")
+            CoroutineScope(Dispatchers.IO).launch {
+                val r = RootActions.setExclusiveHome(on)
+                withContext(Dispatchers.Main) {
+                    cachedExclusive = on
+                    cb((if (on) "开 · " else "关 · ") + r)
+                }
+            }
+        }))
+
         page.addView(sectionTitle("启动"))
-        page.addView(toggleRow("开机自启", { if (SP.getBoolean("boot_launch", false)) "开" else "关" }, { on, cb ->
+        page.addView(toggleRow("开机自启", { if (cachedBoot) "开" else "关" }, { on, cb ->
             SP.putBoolean("boot_launch", on)
+            cachedBoot = on
             cb(if (on) "开" else "关")
         }))
     }
@@ -148,26 +162,38 @@ class PrivilegeActivity : Activity() {
         }
     }
 
+    /**
+     * 刷新状态。
+     * 关键: 不需要 root 的项(开机自启 / 锁定为桌面 / 强制独占)立刻显示,
+     * 不再整体等 root 授权完成 —— 以前没授权时这些格子会一直是空的。
+     */
     private fun refresh() {
-        scope.launch {
-            val granted = withContext(Dispatchers.IO) { RootManager.isGranted }
-            rootTv.text = when {
-                granted -> "Root: 已授权 ✅"
-                RootManager.isRooted() -> "Root: 已检测到 su，点按获取授权"
-                else -> "Root: 未检测到 root"
-            }
-            if (granted) {
-                val (s, l) = withContext(Dispatchers.IO) {
-                    Pair(
-                        runCatching { RootActions.isSystemApp() }.getOrDefault(false),
-                        runCatching { RootActions.isDefaultLauncher() }.getOrDefault(false),
-                    )
+        // ---- 1) 不需要 root: 立即显示 ----
+        cachedLauncher = runCatching { RootActions.isHomeComponentEnabled() }.getOrDefault(false)
+        cachedExclusive = runCatching { RootActions.isExclusiveHome() }.getOrDefault(false)
+        cachedBoot = SP.getBoolean("boot_launch", false)
+        rebuildValues()
+
+        // ---- 2) Root 状态 (读缓存, 不阻塞) ----
+        val granted = RootManager.isGranted
+        rootTv.text = when {
+            granted -> "Root: 已授权 ✅"
+            RootManager.isRooted() -> "Root: 已检测到 su，点按获取授权"
+            else -> "Root: 未检测到 root"
+        }
+
+        // ---- 3) 需要 root 的项: 后台异步补充 ----
+        if (granted) {
+            scope.launch {
+                val sys = withContext(Dispatchers.IO) {
+                    runCatching { RootActions.isSystemApp() }.getOrDefault(false)
                 }
-                cachedSystem = s; cachedLauncher = l
+                cachedSystem = sys
                 rebuildValues()
             }
         }
     }
+
 
     private val valueViews = mutableListOf<Pair<TextView, String>>()
 
@@ -175,7 +201,7 @@ class PrivilegeActivity : Activity() {
         // 值行在点击时已自行刷新, 这里同步一次初始状态
         valueViews.forEach { (tv, kind) ->
             tv.text = when (kind) {
-                "sys" -> if (cachedSystem) "开" else "关"
+                "sys" -> if (RootManager.isGranted) (if (cachedSystem) "开" else "关") else "需授权"
                 "lau" -> if (cachedLauncher) "开" else "关"
                 else -> tv.text
             }
@@ -208,6 +234,8 @@ class PrivilegeActivity : Activity() {
         valueViews.add(v to when (title) {
             "安装为系统应用" -> "sys"
             "锁定为桌面" -> "lau"
+            "强制独占桌面" -> "exc"
+            "开机自启" -> "boot"
             else -> ""
         })
         bindFocus(c, t, v, null)
