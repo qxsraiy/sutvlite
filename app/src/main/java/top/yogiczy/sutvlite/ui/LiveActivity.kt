@@ -365,21 +365,15 @@ open class LiveActivity : Activity() {
                 }
             }
             Logx.i("启动", "无频道缓存, 走网络加载")
-            // 等网络真正可用: 链路 up ≠ 能上网, 开机后往往还要几十秒
+            // 等链路就绪即可 (是否真能上网由后面的"拉频道"结果证明, 比探针可靠)
             var waited = 0
-            while (true) {
-                val linkOk = isNetworkReady() && hasDefaultRoute()
-                if (linkOk && probeInternet()) break
-                showLoading(
-                    if (!linkOk) networkProblemText() else "网络连接中，等待网关就绪…"
-                )
+            while (!(isNetworkReady() && hasDefaultRoute())) {
+                showLoading(networkProblemText())
                 delay(2000)
                 waited += 2000
-                if (waited % 30_000 == 0) {
-                    Logx.w("网络", "等待联网 ${waited / 1000}s: 链路=$linkOk 探测=${runCatching { probeInternet() }.getOrDefault(false)}")
-                }
+                if (waited % 30_000 == 0) Logx.w("网络", "等待链路 ${waited / 1000}s")
             }
-            Logx.i("网络", "联网就绪, 等待 ${waited}ms")
+            if (waited > 0) Logx.i("网络", "链路就绪, 等待 ${waited}ms")
             showLoading("网络已连接，加载中…")
             ensureLocalServer()
 
@@ -578,17 +572,8 @@ open class LiveActivity : Activity() {
                 top.yogiczy.sutvlite.backend.LiteServer.awaitReady(10_000)
             }
             if (player == null || !alive()) return@launch
-            // 缓存优先时可能网络还没通: 先确认能上网, 否则等 (不再直接失败)
-            if (!probeInternet()) {
-                showLoading("等待网络就绪…")
-                var w = 0
-                while (alive() && !probeInternet()) {
-                    delay(2000); w += 2000
-                    if (w % 30_000 == 0) Logx.w("网络", "换台等待联网 ${w / 1000}s")
-                }
-                if (!alive()) return@launch
-                Logx.i("网络", "换台前联网就绪, 等待 ${w}ms")
-            }
+            // 不再用探针做门控: 探针(timeout 短/只测一次)在老盒子上会误判, 把能用的网络
+            // 当成没网, 结果卡死在播放之前。改为直接播放, 失败走退避重试(10/20/30s)。
             if (!useProxy) {
                 val direct = withContext(Dispatchers.IO) { resolveDirect(ch.pid) }
                 if (direct != null) {
@@ -1059,9 +1044,9 @@ open class LiveActivity : Activity() {
     /** 真实连通性探针: 链路 up 不代表能上网 (开机后 DHCP/PPPoE/网关可能还没通) */
     private fun probeInternet(): Boolean {
         // 10 秒内探测成功过就直接复用, 避免每次换台都加一次 TCP 握手
-        if (System.currentTimeMillis() - lastProbeOkAt < 10_000) return true
+        if (android.os.SystemClock.elapsedRealtime() - lastProbeOkAt < 10_000) return true
         val ok = probeInternetNow()
-        if (ok) lastProbeOkAt = System.currentTimeMillis()
+        if (ok) lastProbeOkAt = android.os.SystemClock.elapsedRealtime()
         return ok
     }
 
@@ -1086,8 +1071,8 @@ open class LiveActivity : Activity() {
 
     private val probeClient by lazy {
         top.yogiczy.sutvlite.backend.LegacyTls.builder()
-            .connectTimeout(3, java.util.concurrent.TimeUnit.SECONDS)
-            .readTimeout(3, java.util.concurrent.TimeUnit.SECONDS)
+            .connectTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
             .build()
     }
 

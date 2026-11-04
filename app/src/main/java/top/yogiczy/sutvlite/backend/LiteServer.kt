@@ -98,7 +98,15 @@ object LiteServer {
             .build()
     }
 
+    @Volatile private var starting = false
+
     fun start(context: Context) {
+        synchronized(this) {
+            if (starting || ready) {
+                return
+            }
+            starting = true
+        }
         io.launch {
             try {
                 runCatching {
@@ -108,7 +116,7 @@ object LiteServer {
 
                 server.get("/api/info") { _, response ->
                     response.setContentType("application/json")
-                    response.send("""{"app":"sutvlite","port":$PORT}""")
+                    response.send("""{"app":"sutvlite","port":$PORT,"ready":$ready}""")
                 }
 
                 server.get("/migu/(.+)") { request, response ->
@@ -126,8 +134,10 @@ object LiteServer {
                 server.listen(AsyncServer.getDefault(), PORT)
                 ready = true
                 Log.i(TAG, "本地服务已启动: $serverUrl")
+                Logx.i("服务", "本地代理已就绪: $serverUrl")
             } catch (ex: Exception) {
                 Log.e(TAG, "本地服务启动失败: ${ex.message}")
+                Logx.e("服务", "启动失败(${startRetry + 1}): ${ex.message}")
                 startRetry++
                 if (startRetry <= 10) {
                     Log.i(TAG, "2 秒后重试启动 (第 $startRetry 次)")
@@ -179,12 +189,12 @@ object LiteServer {
     /** 同一 pid 串行 + 全局上游并发上限: 避免 ExoPlayer 重试风暴把 CPU 打满 (老盒子卡死主因) */
     private suspend fun fetchStreamUrl(pid: String): String? {
         playUrlCache[pid]?.let { (t, u) ->
-            if (System.currentTimeMillis() - t < PLAYURL_TTL) return u
+            if (android.os.SystemClock.elapsedRealtime() - t < PLAYURL_TTL) return u
         }
         val mutex = inFlight.getOrPut(pid) { kotlinx.coroutines.sync.Mutex() }
         return mutex.withLock {
             playUrlCache[pid]?.let { (t, u) ->
-                if (System.currentTimeMillis() - t < PLAYURL_TTL) return@withLock u
+                if (android.os.SystemClock.elapsedRealtime() - t < PLAYURL_TTL) return@withLock u
             }
             upstreamGate.withPermit {
                 val t0 = android.os.SystemClock.elapsedRealtime()
@@ -193,7 +203,7 @@ object LiteServer {
                     Logx.e("代理", "playurl 失败: ${result.error}")
                     null
                 } else {
-                    playUrlCache[pid] = System.currentTimeMillis() to result.url
+                    playUrlCache[pid] = android.os.SystemClock.elapsedRealtime() to result.url
                     Logx.i("代理", "playurl ok 耗时 ${android.os.SystemClock.elapsedRealtime() - t0}ms")
                     result.url
                 }
@@ -236,7 +246,7 @@ object LiteServer {
     private fun proxyM3u8(remoteUrl: String, response: AsyncHttpServerResponse) {
         try {
             masterCache[remoteUrl]?.let { (t, body) ->
-                if (System.currentTimeMillis() - t < MASTER_TTL) {
+                if (android.os.SystemClock.elapsedRealtime() - t < MASTER_TTL) {
                     response.setContentType("application/vnd.apple.mpegurl")
                     response.send(body)
                     return
@@ -256,7 +266,7 @@ object LiteServer {
                 val rewritten = rewriteM3u8(body, baseUrl)
                 response.setContentType("application/vnd.apple.mpegurl")
                 response.send(rewritten)
-                masterCache[remoteUrl] = System.currentTimeMillis() to rewritten
+                masterCache[remoteUrl] = android.os.SystemClock.elapsedRealtime() to rewritten
             }
         } catch (e: Exception) {
             Log.e(TAG, "代理M3U8失败: ${e.message}")
