@@ -81,10 +81,12 @@ class LiteApp : Application() {
 
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
-        if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) {
-            top.yogiczy.sutvlite.Logx.w("内存", "onTrimMemory($level), 清理缓存")
+        // 注意: 绝对不能清 playurl/清单缓存!
+        // 开机阶段系统会频繁回调 onTrimMemory, 一清缓存, 播放中的清单/分片请求就要重新走
+        // playurl + 拉清单 -> 反复卡顿/失败。这里只释放 DNS 缓存(可随时重查, 无副作用)。
+        if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_COMPLETE) {
+            top.yogiczy.sutvlite.Logx.w("内存", "onTrimMemory($level), 仅清理 DNS 缓存")
             runCatching { top.yogiczy.sutvlite.backend.PublicDns.clearCache() }
-            runCatching { top.yogiczy.sutvlite.backend.LiteServer.trimCaches() }
         }
     }
 }

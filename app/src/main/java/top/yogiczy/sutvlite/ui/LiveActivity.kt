@@ -125,6 +125,8 @@ open class LiveActivity : Activity() {
     companion object {
         /** 频道缓存有效期: 6 小时 */
         private const val CACHE_TTL_MS = 6 * 60 * 60 * 1000L
+        /** 联网探测用的地址 (拿到任何 HTTP 响应即算通) */
+        private val PROBE_URLS = listOf("https://play.miguvideo.com/", "http://www.baidu.com/")
         /** 当前存活的 LiveActivity 实例数 (>1 说明有双播放器风险) */
         @Volatile
         var instanceCount = 0
@@ -334,11 +336,13 @@ open class LiveActivity : Activity() {
     // ==================== 加载 + 播放 ====================
 
     /** 缓存优先启动: 有缓存就立刻开播, 网络刷新放后台 */
+    private var loadJob: Job? = null
+
     private fun loadAndPlay() {
-        if (starting) return
+        if (starting || loadJob?.isActive == true) return
         starting = true
         showLoading("启动中…")
-        scope.launch {
+        loadJob = scope.launch {
             val manager = MiguBackendManager.getInstance(this@LiveActivity)
 
             // ---------- 0) 缓存优先 ----------
@@ -412,6 +416,7 @@ open class LiveActivity : Activity() {
 
             applyLastChannel()
             switchChannel()
+            starting = false
         }
     }
 
@@ -1060,19 +1065,30 @@ open class LiveActivity : Activity() {
         return ok
     }
 
-    private fun probeInternetNow(): Boolean = try {
-        val ips = runCatching { top.yogiczy.sutvlite.backend.PublicDns.lookup("play.miguvideo.com") }
-            .getOrNull()
-        if (ips.isNullOrEmpty()) {
-            false
-        } else {
-            java.net.Socket().use { s ->
-                s.connect(java.net.InetSocketAddress(ips.first(), 443), 4000)
+    /**
+     * 真正的联网判定: 用 OkHttp 发一次 HEAD。
+     * 不能自己起 Socket 连"DNS 第一个 IP" —— DNS 常返回多个 IP(含 IPv6/不可达边缘节点),
+     * 第一个不通就误判"没网", 而 OkHttp 会自己换 IP 并重试, 真实请求其实是成功的。
+     * 只要拿到任何 HTTP 响应(哪怕是 4xx/5xx)就说明网络通。
+     */
+    private fun probeInternetNow(): Boolean {
+        for (url in PROBE_URLS) {
+            try {
+                val req = okhttp3.Request.Builder().url(url).head().build()
+                probeClient.newCall(req).execute().use { r ->
+                    if (r.code() > 0) return true
+                }
+            } catch (_: Throwable) {
             }
-            true
         }
-    } catch (_: Throwable) {
-        false
+        return false
+    }
+
+    private val probeClient by lazy {
+        top.yogiczy.sutvlite.backend.LegacyTls.builder()
+            .connectTimeout(3, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(3, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
     }
 
     private fun isNetworkReady(): Boolean = try {
