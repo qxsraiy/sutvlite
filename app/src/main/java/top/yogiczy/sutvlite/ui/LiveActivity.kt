@@ -74,13 +74,13 @@ open class LiveActivity : Activity() {
     private var loadingTv: TextView? = null
     private var loadingSpinner: android.widget.ProgressBar? = null
     private var loadingBoxView: LinearLayout? = null
-    private var bannerSpinner: android.widget.ProgressBar? = null
-    private var bannerStatus: TextView? = null
     /** 加载计时器: 每 500ms 更新"已用 N 秒", 让等待有变化 */
     private var loadingTickJob: Job? = null
     private var loadingStartAt = 0L
     private var loadingBaseText = ""
     /** 开机等待遮罩 (转圈 + 倒计时 + root 提示) */
+    /** 换台时中央大圈圈 (无文字无倒计时) */
+    private var bigSpinner: android.widget.ProgressBar? = null
     private var bootBox: LinearLayout? = null
     private var bootCountdown: TextView? = null
     private var bootTitle: TextView? = null
@@ -234,28 +234,22 @@ open class LiveActivity : Activity() {
             visibility = View.GONE
         }
         bannerName = TextView(this).apply {
-            textSize = 38f
+            textSize = 40f
             setTextColor(C_WHITE)
             setTypeface(null, android.graphics.Typeface.BOLD)
+            setPadding(0, 0, dp(4), 0)
         }
-        bannerStatus = TextView(this).apply {
-            textSize = 14f
-            setTextColor(C_BLUE_LIGHT)
-            setPadding(0, dp(6), 0, 0)
-        }
-        // 换台时旋转的圈圈
-        bannerSpinner = android.widget.ProgressBar(this).apply {
-            layoutParams = LinearLayout.LayoutParams(dp(30), dp(30)).apply { setMargins(0, 0, dp(14), 0) }
-        }
+        // 横幅: 左侧蓝色竖条 + 频道名 (换台只在屏幕中央转圈, 不放文字/倒计时)
         val bannerRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            addView(bannerSpinner)
-            addView(LinearLayout(this@LiveActivity).apply {
-                orientation = LinearLayout.VERTICAL
-                addView(bannerName)
-                addView(bannerStatus)
-            })
+            addView(View(this@LiveActivity).apply {
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(3).toFloat()
+                    setColor(C_BLUE)
+                }
+            }, LinearLayout.LayoutParams(dp(5), dp(54)).apply { setMargins(0, 0, dp(18), 0) })
+            addView(bannerName)
         }
         bannerCard!!.addView(bannerRow)
         root.addView(bannerCard, FrameLayout.LayoutParams(
@@ -284,6 +278,19 @@ open class LiveActivity : Activity() {
         setContentView(root)
     }
 
+    /** 换台: 中央大圈圈 (无文字、无倒计时) */
+    private fun showBigSpinner() {
+        if (!alive()) return
+        loadingTickJob?.cancel()
+        loadingStartAt = 0L
+        loadingBoxView?.visibility = View.GONE
+        bigSpinner?.visibility = View.VISIBLE
+    }
+
+    private fun hideBigSpinner() {
+        bigSpinner?.visibility = View.GONE
+    }
+
     /** 开机等待遮罩: 转圈 + 倒计时 + root 提示 */
     private fun buildBootBox(root: FrameLayout) {
         val box = LinearLayout(this).apply {
@@ -310,12 +317,11 @@ open class LiveActivity : Activity() {
             layoutParams = LinearLayout.LayoutParams(dp(56), dp(56)).apply { gravity = Gravity.CENTER }
         }
         val hint = TextView(this).apply {
-            text = "等待网络响应，预计 1~2 分钟\n\n提示：盒子已 root 的话，到「设置 → 特权功能」授权后，\nApp 每次开机会自动校准系统时间，立刻就能播放"
+            text = ""
             textSize = 13f
             setTextColor(0xFF8FA3C0.toInt())
             gravity = Gravity.CENTER
-            setPadding(dp(60), dp(24), dp(60), 0)
-            setLineSpacing(dp(3).toFloat(), 1f)
+            visibility = View.GONE
         }
         box.addView(spinner)
         box.addView(bootTitle, LinearLayout.LayoutParams(
@@ -357,6 +363,10 @@ open class LiveActivity : Activity() {
             gravity = Gravity.CENTER
             setBackgroundColor(0xFF0B2A5B.toInt())
             visibility = View.GONE
+            // 关键: 不抢焦点、不消费按键 -> 蓝屏时遥控仍可直接换台
+            isFocusable = false
+            isFocusableInTouchMode = false
+            isClickable = false
         }
         blueTitle = TextView(this).apply {
             text = "该频道暂无节目"
@@ -389,19 +399,31 @@ open class LiveActivity : Activity() {
     private fun showShieldScreen(message: String) {
         if (!alive()) return
         hideLoading()
+        hideBigSpinner()
+        shieldStreak++
         blueMsg?.text = message.ifBlank { "节目播出调整，换个内容看看吧" }
         blueBox?.visibility = View.VISIBLE
+        isShieldShowing = true
         blueJob?.cancel()
+
+        if (shieldStreak >= 3) {
+            // 连续多个频道都没节目: 不再无限跳台, 提示用户手动换
+            blueTitle?.text = "当前多个频道暂无节目"
+            blueCountdown?.text = "按 ↑/↓ 可换台，或稍后再试"
+            return
+        }
+
+        blueTitle?.text = "该频道暂无节目"
         blueJob = scope.launch {
             var left = 10
             while (alive() && left > 0) {
-                blueCountdown?.text = "${left} 秒后自动换到下一台（也可按 ↑/↓ 换台）"
+                blueCountdown?.text = "${left} 秒后自动换到下一台（按 ↑/↓ 可立即换台）"
                 delay(1000)
                 left--
             }
-            if (!alive()) return@launch
-            blueBox?.visibility = View.GONE
+            if (!alive() || !isShieldShowing) return@launch
             Logx.i("换台", "版权屏蔽自动跳台")
+            hideShieldScreen()
             nextChannel()
         }
     }
@@ -409,7 +431,14 @@ open class LiveActivity : Activity() {
     private fun hideShieldScreen() {
         blueJob?.cancel()
         blueBox?.visibility = View.GONE
+        isShieldShowing = false
     }
+
+    /** 蓝屏是否正在显示 (按键优先处理) */
+    private var isShieldShowing = false
+
+    /** 连续屏蔽计数: 连续多个频道都没节目时停止自动跳台 */
+    private var shieldStreak = 0
     /** 三段式选台面板: 分组 | 竖线 | 频道 */
     private fun buildPanel(root: FrameLayout) {
         val ov = FrameLayout(this).apply {
@@ -664,7 +693,9 @@ open class LiveActivity : Activity() {
         playedFirstFrame = false
         hardRestartDone = false
         failStreak = 0
-        showLoading("连接中…")
+        // 换台先收起蓝屏/等待遮罩, 只留中央大圈圈
+        hideShieldScreen()
+        showBigSpinner()
         Logx.i("换台", "→ ${ch.name} (${ch.pid}) 代理=$useProxy")
         showBanner(ch.name)
 
@@ -843,13 +874,6 @@ open class LiveActivity : Activity() {
     }
 
     /** 换台/切换过程中的状态提示 (显示在横幅下方) */
-    private fun showSwitchStatus(text: String) {
-        if (!alive()) return
-        bannerStatus?.text = text
-        bannerCard?.visibility = View.VISIBLE
-        bannerSpinner?.visibility = View.VISIBLE
-    }
-
     private fun resolveDirect(pid: String): String? = try {
         val client = top.yogiczy.sutvlite.backend.LegacyTls.builder()
             .followRedirects(false)
@@ -929,8 +953,6 @@ open class LiveActivity : Activity() {
     private fun showBanner(name: String) {
         if (!alive()) return
         bannerName?.text = name
-        bannerStatus?.text = "连接中…"
-        bannerSpinner?.visibility = View.VISIBLE
         bannerCard?.visibility = View.VISIBLE
         bannerHideJob?.cancel()
     }
@@ -938,8 +960,6 @@ open class LiveActivity : Activity() {
     /** 首帧到达: 停转圈, 显示就绪后 2 秒隐去 */
     private fun onBannerReady() {
         if (!alive()) return
-        bannerSpinner?.visibility = View.GONE
-        bannerStatus?.text = ""
         bannerHideJob?.cancel()
         bannerHideJob = scope.launch {
             delay(2000)
@@ -1168,6 +1188,24 @@ open class LiveActivity : Activity() {
             }
         }
         if (overlayVisible) return super.onKeyDown(keyCode, event)
+
+        // 蓝屏显示时: 任何方向键/OK 都先收起蓝屏并立即换台, 保证遥控一定有效
+        if (isShieldShowing) {
+            when (keyCode) {
+                KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_LEFT,
+                KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT,
+                KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
+                    hideShieldScreen()
+                    shieldStreak = 0
+                    if (keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_LEFT) {
+                        prevChannel()
+                    } else {
+                        nextChannel()
+                    }
+                    return true
+                }
+            }
+        }
 
         return when (keyCode) {
             KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_LEFT -> { prevChannel(); true }
