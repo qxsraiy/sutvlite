@@ -34,6 +34,8 @@ object LiteServer {
 
     private const val TAG = "LiteServer"
     private const val PORT = 10481
+    private const val UA =
+        "Mozilla/5.0 (Linux; Android 10; SM-G975F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
     private val serverUrl = "http://127.0.0.1:$PORT"
 
     private var startRetry = 0
@@ -43,6 +45,9 @@ object LiteServer {
 
     /** 服务是否已成功 listen (冷启动时 Activity 要等它, 否则首次请求直接 Connection refused) */
     @Volatile private var ready = false
+
+    /** 当前正在处理的频道 pid (供"换节点重试"用) */
+    private val lastPid = java.lang.ThreadLocal<String?>()
 
     fun isReady(): Boolean = ready
 
@@ -243,7 +248,12 @@ object LiteServer {
         }
     }
 
-    private fun proxyM3u8(remoteUrl: String, response: AsyncHttpServerResponse) {
+    /**
+     * 拉主清单并改写。
+     * 上游返回非 m3u8 (403/HTML 错误页/空) 时 → 换新节点重试，绝不把坏响应丢给播放器。
+     * 以前直接回 502 文本，ExoPlayer 会报 code=2004(内容类型不合法)，表现为"第一次打不开"。
+     */
+    private suspend fun proxyM3u8(remoteUrl: String, response: AsyncHttpServerResponse, depth: Int = 0) {
         try {
             masterCache[remoteUrl]?.let { (t, body) ->
                 if (android.os.SystemClock.elapsedRealtime() - t < MASTER_TTL) {
@@ -252,12 +262,29 @@ object LiteServer {
                     return
                 }
             }
-            val req = Request.Builder().url(remoteUrl).get().build()
+            val req = Request.Builder()
+                .url(remoteUrl)
+                .header("User-Agent", UA)
+                .header("Referer", "https://www.miguvideo.com/")
+                .get()
+                .build()
             proxyClient.newCall(req).execute().use { resp ->
                 val body = resp.body()?.string() ?: ""
                 val baseUrl = resp.request().url().toString()
                 if (!body.trimStart().startsWith("#EXTM3U")) {
-                    Log.e(TAG, "上游非M3U8(HTTP ${resp.code()}): ${body.take(120)}")
+                    Logx.e(
+                        "代理",
+                        "上游非M3U8 code=${resp.code()} ct=${resp.header("Content-Type")} " +
+                            "body=${body.take(200).replace("\n", " ")}"
+                    )
+                    if (depth < 2) {
+                        val fresh = retryFreshUrl(remoteUrl)
+                        if (fresh != null && fresh != remoteUrl) {
+                            Logx.w("代理", "换节点重试 depth=${depth + 1}")
+                            proxyM3u8(fresh, response, depth + 1)
+                            return
+                        }
+                    }
                     response.code(502)
                     response.setContentType("text/plain")
                     response.send("上游不是M3U8(HTTP ${resp.code()})")
@@ -269,11 +296,39 @@ object LiteServer {
                 masterCache[remoteUrl] = android.os.SystemClock.elapsedRealtime() to rewritten
             }
         } catch (e: Exception) {
-            Log.e(TAG, "代理M3U8失败: ${e.message}")
+            Logx.e("代理", "代理M3U8失败: ${e.message}")
+            if (depth < 2) {
+                val fresh = retryFreshUrl(remoteUrl)
+                if (fresh != null && fresh != remoteUrl) {
+                    Logx.w("代理", "异常后换节点重试 depth=${depth + 1}")
+                    proxyM3u8(fresh, response, depth + 1)
+                    return
+                }
+            }
             response.code(502)
             response.setContentType("text/plain")
             response.send("代理M3U8失败: ${e.message}")
         }
+    }
+
+    /** 清掉该频道 playurl 缓存并重新签发, 拿到新的清单地址 (换 CDN 节点) */
+    private suspend fun retryFreshUrl(oldUrl: String): String? = try {
+        val pid = lastPid.get()
+        if (pid.isNullOrBlank()) {
+            null
+        } else {
+            playUrlCache.remove(pid)
+            val r = MiguApi.getStreamUrl720p(pid)
+            if (r.isSuccess && r.url.isNotEmpty()) {
+                val finalUrl = resolveRedirect(r.url).ifEmpty { r.url }
+                playUrlCache[pid] = android.os.SystemClock.elapsedRealtime() to r.url
+                if (finalUrl != oldUrl) finalUrl else null
+            } else {
+                null
+            }
+        }
+    } catch (_: Throwable) {
+        null
     }
 
     /** 把 m3u8 里的 URL 行改写到本机 /miguprox/ */

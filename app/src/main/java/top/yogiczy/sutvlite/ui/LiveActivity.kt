@@ -520,16 +520,20 @@ open class LiveActivity : Activity() {
                     hideLoading()
                     failStreak++
                     Logx.e("播放", "失败(${failStreak}): $msg")
-                    // 退避重试: 10s -> 20s -> 30s 封顶, 永不放弃 (开机后网络慢也能自愈)
+                    // 失败即换路径重试: 代理 <-> 直连 交替, 间隔 3s/6s/10s 封顶
+                    // (以前等 30 秒才切, 而播放器 24 秒就报错了, 切换永远来不及)
                     autoSwitchJob?.cancel()
                     restartJob?.cancel()
                     autoSwitchJob = scope.launch {
-                        val waitMs = minOf(10_000L * failStreak, 30_000L)
-                        showHint("播放失败，${waitMs / 1000} 秒后自动重试")
+                        val waitMs = minOf(3_000L * failStreak, 10_000L)
+                        val nextProxy = !useProxy
+                        showHint(
+                            "播放失败，${waitMs / 1000} 秒后改用${if (nextProxy) "本地代理" else "直连"}重试"
+                        )
                         delay(waitMs)
                         if (alive() && !playedFirstFrame) {
-                            Logx.i("播放", "退避重试 #${failStreak}")
-                            failStreak = 0
+                            useProxy = nextProxy
+                            Logx.i("播放", "失败重试 #${failStreak} → ${if (useProxy) "代理" else "直连"}")
                             switchChannel()
                         }
                     }
