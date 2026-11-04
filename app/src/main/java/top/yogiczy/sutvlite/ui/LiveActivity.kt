@@ -751,6 +751,7 @@ open class LiveActivity : Activity() {
             runOnUiThread {
                 if (alive()) {
                     hideLoading()
+                    hideBigSpinner()   // 出画面立刻收起中央圆圈
                     onBannerReady()
                 }
             }
