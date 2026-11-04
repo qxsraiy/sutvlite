@@ -61,6 +61,7 @@ class PrivilegeActivity : Activity() {
             isVerticalScrollBarEnabled = false
             addView(page)
         }
+        scroll.setBackgroundColor(C_BG)
         setContentView(scroll)
         build()
         refresh()

@@ -64,10 +64,12 @@ class LiteSettingsActivity : Activity() {
         root.addView(list, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
 
+        val bg = runCatching { Prefs.blockedGroups().size }.getOrDefault(0)
+        val bc = runCatching { Prefs.blockedChannels().size }.getOrDefault(0)
         list.addView(
             makeCard(
                 "分组和频道管理",
-                "显示 / 隐藏 分组与频道，隐藏后不出现在选台面板",
+                "显示 / 隐藏 分组与频道 · 已屏蔽 分组 $bg 个 / 频道 $bc 个",
                 "直播",
             ) { startActivity(Intent(this, GroupChannelActivity::class.java)) }
         )
@@ -97,15 +99,7 @@ class LiteSettingsActivity : Activity() {
             }
         )
 
-        // 底部状态
-        root.addView(TextView(this).apply {
-            textSize = 12f
-            setTextColor(C_TEXT2)
-            gravity = Gravity.CENTER
-            setPadding(0, dp(18), 0, 0)
-            text = "屏蔽分组 ${runCatching { Prefs.blockedGroups().size }.getOrDefault(0)} 个   " +
-                "屏蔽频道 ${runCatching { Prefs.blockedChannels().size }.getOrDefault(0)} 个"
-        })
+
 
         setContentView(root)
     }

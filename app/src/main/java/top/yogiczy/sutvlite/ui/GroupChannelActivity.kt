@@ -59,8 +59,10 @@ class GroupChannelActivity : Activity() {
         })
         val scroll = ScrollView(this).apply {
             isVerticalScrollBarEnabled = false
+            setBackgroundColor(C_BG)
             addView(page)
         }
+        scroll.setBackgroundColor(C_BG)
         setContentView(scroll)
         load()
     }
