@@ -222,6 +222,14 @@ open class LiveActivity : Activity() {
             gravity = Gravity.CENTER
         })
 
+        // 换台中央大圈圈: 只有一个圆环, 无边框无文字
+        bigSpinner = android.widget.ProgressBar(this).apply {
+            visibility = View.GONE
+        }
+        root.addView(bigSpinner, FrameLayout.LayoutParams(dp(88), dp(88)).apply {
+            gravity = Gravity.CENTER
+        })
+
         // 换台横幅: 只有频道名
         bannerCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -369,7 +377,7 @@ open class LiveActivity : Activity() {
             isClickable = false
         }
         blueTitle = TextView(this).apply {
-            text = "该频道暂无节目"
+            text = "受运营商版权限制该频道暂无法播放"
             textSize = 34f
             setTextColor(C_WHITE)
             gravity = Gravity.CENTER
@@ -401,7 +409,7 @@ open class LiveActivity : Activity() {
         hideLoading()
         hideBigSpinner()
         shieldStreak++
-        blueMsg?.text = message.ifBlank { "节目播出调整，换个内容看看吧" }
+        blueMsg?.text = "换个频道看看，10 秒后会自动切换"
         blueBox?.visibility = View.VISIBLE
         isShieldShowing = true
         blueJob?.cancel()
@@ -413,7 +421,7 @@ open class LiveActivity : Activity() {
             return
         }
 
-        blueTitle?.text = "该频道暂无节目"
+        blueTitle?.text = "受运营商版权限制该频道暂无法播放"
         blueJob = scope.launch {
             var left = 10
             while (alive() && left > 0) {
@@ -554,7 +562,7 @@ open class LiveActivity : Activity() {
             showLoading("网络已连接，加载中…")
             // 校准应用时钟 (签名必需), 最多等 6 秒
             if (!AppClock.isCalibrated() || AppClock.isStale()) {
-                showLoading("正在校准时间…")
+                showBigSpinner()
                 val ok = AppClock.ensureCalibrated(6000)
                 Logx.i("时钟", "启动校准结果=$ok 现在=${AppClock.nowText()}")
             }
@@ -755,7 +763,7 @@ open class LiveActivity : Activity() {
             delay(10_000)
             if (!playedFirstFrame && !hardRestartDone) {
                 hardRestartDone = true
-                showLoading("重新加载…")
+                showBigSpinner()
                 player?.restart()
             }
         }
@@ -766,7 +774,7 @@ open class LiveActivity : Activity() {
             val url = "http://127.0.0.1:10481/migufb/${ch.pid}"
             val ready = top.yogiczy.sutvlite.backend.LiteServer.awaitReady(15_000)
             if (!ready) {
-                showLoading("服务启动中…")
+                showBigSpinner()
                 top.yogiczy.sutvlite.backend.LiteServer.start(this@LiveActivity)
                 top.yogiczy.sutvlite.backend.LiteServer.awaitReady(10_000)
             }
@@ -804,14 +812,14 @@ open class LiveActivity : Activity() {
             }
             // 签名需要正确的时间戳: 时钟没校准先等它 (开机初期墙钟可能是 2016)
             if (!AppClock.isCalibrated() || AppClock.isStale()) {
-                showLoading("正在校准时间…")
+                showBigSpinner()
                 val clockOk = AppClock.ensureCalibrated(8000)
                 if (!clockOk) {
                     Logx.w("时钟", "校准失败, 时钟异常=${AppClock.deviceClockInsane()}, 仍尝试播放")
                 }
             }
             // 预热: 自己先拉一次清单 (DNS/TLS/校时/playurl/m3u8 全部热起来并进缓存)
-            showLoading("连接中…")
+            showBigSpinner()
             val warm = withContext(Dispatchers.IO) { prefetchManifest(url) }
             if (currentChannelList.getOrNull(currentChannelIdx)?.pid != ch.pid) return@launch
             if (warm == PREFETCH_SHIELD) {
@@ -867,7 +875,6 @@ open class LiveActivity : Activity() {
             if (!playedFirstFrame) {
                 useProxy = !useProxy
                 Logx.w("换台", "30 秒无画面, 切换${if (useProxy) "代理" else "直连"}")
-                showLoading(if (useProxy) "切换为本地代理…" else "切换为直连…")
                 switchChannel()
             }
         }
