@@ -1,4 +1,4 @@
-package top.yogiczy.sutvlite
+﻿package top.yogiczy.sutvlite
 
 import okhttp3.Request
 
@@ -57,6 +57,9 @@ object AppClock {
 
     /** 设备墙钟是否明显不对 (仅用于日志/提示) */
     fun deviceClockInsane(): Boolean = System.currentTimeMillis() < SANE_MS
+
+    /** 设备墙钟文本 (诊断用) */
+    fun nowTextDev(): String = fmt(System.currentTimeMillis())
 
     fun nowText(): String =
         java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US)

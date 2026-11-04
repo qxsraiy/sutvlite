@@ -1,6 +1,7 @@
-package top.yogiczy.sutvlite.backend
+﻿package top.yogiczy.sutvlite.backend
 
 import android.util.Log
+import top.yogiczy.sutvlite.Logx
 import java.net.InetAddress
 import java.net.UnknownHostException
 import java.util.concurrent.ConcurrentHashMap
@@ -35,8 +36,12 @@ object PublicDns : okhttp3.Dns {
             if (System.currentTimeMillis() - t < CACHE_TTL_MS) return list
         }
 
-        // 1) 系统 DNS
-        val sys = runCatching { okhttp3.Dns.SYSTEM.lookup(hostname) }.getOrNull()
+        // 1) 系统 DNS —— 只取 IPv4!
+        // 原因: 咪咕 CDN 会把 playurl 时的 client_ip 写进流地址,
+        // 而盒子的 IPv6 隐私地址在开机后还会轮换, 导致请求源 IP 与地址里的不一致 -> 661。
+        // IPv4 地址稳定, 因此强制走 IPv4。
+        val sysAll = runCatching { okhttp3.Dns.SYSTEM.lookup(hostname) }.getOrNull()
+        val sys = sysAll?.filterIsInstance<java.net.Inet4Address>()
         if (!sys.isNullOrEmpty()) {
             cache[hostname] = System.currentTimeMillis() to sys
             return sys
@@ -54,6 +59,27 @@ object PublicDns : okhttp3.Dns {
         }
 
         throw UnknownHostException("$hostname (系统DNS与公共DNS均失败)")
+    }
+
+    /**
+     * 汇总所有解析器(系统 + 多个公共 DNS)的结果, 去重返回。
+     * 用于"某个解析器被污染/返回假地址"时逐个尝试。
+     */
+    fun resolveAll(hostname: String): List<java.net.InetAddress> {
+        // 只用 IPv4 (queryA 本来就是 A 记录; 系统结果里过滤掉 IPv6)
+        val out = LinkedHashMap<String, java.net.InetAddress>()
+        runCatching {
+            okhttp3.Dns.SYSTEM.lookup(hostname)
+                .filterIsInstance<java.net.Inet4Address>()
+                .forEach { out[it.hostAddress ?: return@forEach] = it }
+        }
+        for (server in servers) {
+            runCatching {
+                queryA(hostname, server).forEach { out[it.hostAddress ?: return@forEach] = it }
+            }
+        }
+        Logx.i("DNS", "$hostname -> ${out.keys.joinToString()}")
+        return out.values.toList()
     }
 
     /** 裸 UDP 发一条 A 记录查询并解析应答 */

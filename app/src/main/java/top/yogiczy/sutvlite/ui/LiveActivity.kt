@@ -2,6 +2,7 @@
 
 import top.yogiczy.sutvlite.AppClock
 import top.yogiczy.sutvlite.Logx
+import top.yogiczy.sutvlite.SystemClockFixer
 
 import android.app.Activity
 import android.content.BroadcastReceiver
@@ -544,7 +545,7 @@ open class LiveActivity : Activity() {
                             delay(1000)
                             return@launch
                         }
-                        val waitMs = minOf(3_000L * failStreak, 10_000L)
+                        val waitMs = minOf(1_500L * failStreak, 8_000L)
                         val nextProxy = !useProxy
                         showHint(
                             "播放失败，${waitMs / 1000} 秒后改用${if (nextProxy) "本地代理" else "直连"}重试"
@@ -595,6 +596,26 @@ open class LiveActivity : Activity() {
                 top.yogiczy.sutvlite.backend.LiteServer.awaitReady(10_000)
             }
             if (player == null || !alive()) return@launch
+            // 盒子开机后系统时间要几十秒才被校准(2016->2026)。墙钟错误期间, 咪咕 CDN
+            // 对走我们 OkHttp 的请求一律给 661。两条对策:
+            //   1) 有 root: 直接用网络时间把系统时钟改对(瞬间解决, 不影响其它应用逻辑)
+            //   2) 没 root: 改用"直连"——让 ExoPlayer 自己去拉 CDN, 它的指纹与 OkHttp 不同,
+            //      常常能正常返回; 不行再退回代理
+            // 开机初期: 系统时间未同步 + 运营商出口 IP 未稳定, 咪咕 CDN 会一律返回 661。
+            // 这段时间不必硬撞(重试也没用), 显示"网络初始化中", 每 5 秒轻量试探一次;
+            // 一旦 CDN 接受(或系统时间同步完成) 立刻正常播放。
+            if (AppClock.deviceClockInsane()) {
+                Logx.w("时钟", "开机初期(墙钟=${AppClock.nowTextDev()}), 等待网络就绪")
+                SystemClockFixer.ensureSystemTime() // 已授权则顺手修时钟, 不阻塞
+                var waited = 0
+                while (alive() && AppClock.deviceClockInsane() && waited < 180_000) {
+                    showLoading("网络初始化中…")
+                    delay(5_000)
+                    waited += 5_000
+                }
+                if (!alive()) return@launch
+                Logx.i("时钟", "开机初始化完成(等待 ${waited}ms), 开始播放")
+            }
             // 不再用探针做门控: 探针(timeout 短/只测一次)在老盒子上会误判, 把能用的网络
             // 当成没网, 结果卡死在播放之前。改为直接播放, 失败走退避重试(10/20/30s)。
             if (!useProxy) {
