@@ -605,13 +605,14 @@ open class LiveActivity : Activity() {
             // 这段时间不必硬撞(重试也没用), 显示"网络初始化中", 每 5 秒轻量试探一次;
             // 一旦 CDN 接受(或系统时间同步完成) 立刻正常播放。
             if (AppClock.deviceClockInsane()) {
-                Logx.w("时钟", "开机初期(墙钟=${AppClock.nowTextDev()}), 等待网络就绪")
+                Logx.w("时钟", "开机初期(墙钟=${AppClock.nowTextDev()}), 边等边试")
                 SystemClockFixer.ensureSystemTime() // 已授权则顺手修时钟, 不阻塞
+                // 不再干等: 每 4 秒试探一次, 网络/时钟一就绪立刻往下走
                 var waited = 0
-                while (alive() && AppClock.deviceClockInsane() && waited < 180_000) {
+                while (alive() && AppClock.deviceClockInsane() && waited < 120_000) {
                     showLoading("网络初始化中…")
-                    delay(5_000)
-                    waited += 5_000
+                    delay(4_000)
+                    waited += 4_000
                 }
                 if (!alive()) return@launch
                 Logx.i("时钟", "开机初始化完成(等待 ${waited}ms), 开始播放")
