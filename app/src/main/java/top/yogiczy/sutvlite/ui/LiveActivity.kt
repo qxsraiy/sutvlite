@@ -1332,14 +1332,31 @@ open class LiveActivity : Activity() {
 
     // ==================== 网络 ====================
 
-    /** 有无默认路由 (网线插上但没拿到 IP 时为 false) */
+    /**
+     * 有无默认路由 (网线插上但没拿到 IP 时为 false)
+     *
+     * 注意: Android 5.0+ 用策略路由, 默认路由在各网络的专属表 (table 10xx) 里,
+     * 部分新设备/ROM 不再往 main 表回写, /proc/net/route 里根本没有 00000000,
+     * 只读 /proc 会把"有网"误判成"未获取到 IP"。
+     * API 21+ 改问 ConnectivityManager 的 LinkProperties; 老系统才读 /proc。
+     */
     private fun hasDefaultRoute(): Boolean = try {
-        java.io.File("/proc/net/route").readLines().drop(1).any { line ->
-            val cols = line.split('\t', ' ').filter { it.isNotBlank() }
-            cols.size >= 2 && cols[1] == "00000000"
+        if (android.os.Build.VERSION.SDK_INT >= 21) {
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+            cm.allNetworks.any { n ->
+                cm.getLinkProperties(n)?.routes?.any {
+                    it.isDefaultRoute || it.destination.prefixLength == 0
+                } == true
+            }
+        } else {
+            java.io.File("/proc/net/route").readLines().drop(1).any { line ->
+                val cols = line.split('\t', ' ').filter { it.isNotBlank() }
+                cols.size >= 2 && cols[1] == "00000000"
+            }
         }
     } catch (_: Throwable) {
-        false
+        // 读不出来时不误报: 能不能上网由后面的频道加载结果证明
+        true
     }
 
     /** 无网络时的明确提示 (区分: 没插网线 / 没拿到IP / 正常) */
